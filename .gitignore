@@ -225,3 +225,5 @@ Thumbs.db
 # Prisma
 node_modules/.prisma/
 prisma/migrations/migration_lock.toml
+
+Add-Content .gitignore "`n# MediaMTX binary`nmediamtx.exe"
