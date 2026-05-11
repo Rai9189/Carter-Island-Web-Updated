@@ -4,35 +4,42 @@ import useSWR from 'swr';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Activity,
-  Wifi,
-  Clock,
-  MapPin,
-  Battery,
+  Droplets,
+  Thermometer,
+  Navigation,
+  Compass,
   Gauge,
+  MapPin,
+  Waves,
+  Wind,
 } from 'lucide-react';
 import MapButton from '@/components/ui/MapButton';
 import { apiClient } from '@/lib/api-client';
 
-// SWR fetcher pakai apiClient — otomatis kirim JWT token
 const fetcher = apiClient.swrFetcher;
 
-function formatUptime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return `${hours}h ${minutes}m`;
+/**
+ * Warna indikator pH air laut:
+ *  < 7.5  → asam (merah)
+ *  7.5–8.4 → normal (hijau)
+ *  > 8.4  → basa (kuning)
+ */
+function getPhColor(ph: number) {
+  if (ph < 7.5) return { text: 'text-red-600', bg: 'bg-red-100' };
+  if (ph > 8.4) return { text: 'text-yellow-600', bg: 'bg-yellow-100' };
+  return { text: 'text-green-600', bg: 'bg-green-100' };
 }
 
-function getConnectionColor(strength: string) {
-  switch (strength.toLowerCase()) {
-    case 'strong':
-      return { bg: 'bg-green-100', text: 'text-green-600' };
-    case 'moderate':
-      return { bg: 'bg-yellow-100', text: 'text-yellow-600' };
-    case 'weak':
-      return { bg: 'bg-red-100', text: 'text-red-600' };
-    default:
-      return { bg: 'bg-gray-100', text: 'text-gray-600' };
-  }
+/**
+ * Warna indikator dissolved oxygen:
+ *  < 5 mg/L → rendah (merah)
+ *  5–8      → normal (hijau)
+ *  > 8      → tinggi (biru)
+ */
+function getDoColor(doVal: number) {
+  if (doVal < 5) return 'text-red-600';
+  if (doVal > 8) return 'text-blue-600';
+  return 'text-green-600';
 }
 
 interface DashboardContentProps {
@@ -45,241 +52,263 @@ export default function DashboardContent({
   userRole,
 }: DashboardContentProps) {
   /**
-   * PERUBAHAN:
-   * - URL berubah dari '/api/telemetry/latest' ke '/api/telemetry/latest'
-   *   (sama, tapi sekarang fetcher mengarah ke FastAPI port 8000)
-   * - fetcher diganti dari fetch() biasa ke apiClient.swrFetcher
-   *   yang otomatis kirim JWT token
-   * - HAPUS: useEffect polling /api/health/check
-   *   Sudah tidak perlu karena health check jalan otomatis di server (Fase 5)
+   * Telemetry → data kualitas air (ph_level, tds_value, dissolved_oxygen, water_temp, depth)
+   * AUV Status → data navigasi ROV (roll, pitch, yaw, depth, heading, speed)
    */
   const { data: telemetryData, error: telemetryError } = useSWR(
     '/api/telemetry/latest',
     fetcher,
-    {
-      refreshInterval: 2000,
-      revalidateOnFocus: true,
-      revalidateOnReconnect: true,
-    }
+    { refreshInterval: 2000, revalidateOnFocus: true }
   );
 
   const { data: auvData, error: auvError } = useSWR(
     '/api/auv-status/latest',
     fetcher,
-    {
-      refreshInterval: 3000,
-      revalidateOnFocus: true,
-      revalidateOnReconnect: true,
-    }
+    { refreshInterval: 2000, revalidateOnFocus: true }
   );
 
-  // HAPUS: useEffect polling /api/health/check
-  // Health check sekarang jalan otomatis di server via APScheduler (Fase 5)
-  // Frontend cukup baca hasilnya dari /api/auv-status/latest
-
   const telemetry = (telemetryData as any)?.data;
-  const auvStatus = (auvData as any)?.data;
-  const isLoading = !telemetry && !auvStatus && !telemetryError && !auvError;
+  const auv       = (auvData as any)?.data;
+  const isLoading = !telemetry && !auv && !telemetryError && !auvError;
 
-  const connectionColor = auvStatus
-    ? getConnectionColor(auvStatus.connectionStrength)
-    : { bg: 'bg-blue-100', text: 'text-blue-600' };
+  const phColor = telemetry ? getPhColor(telemetry.phLevel) : { text: 'text-gray-500', bg: 'bg-gray-100' };
 
   return (
     <>
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-        {/* AUV Status */}
+      {/* ── Stats Cards ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+
+        {/* pH Air */}
         <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-2">
+          <CardContent className="px-6 py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600">AUV Status</p>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {isLoading ? 'Loading...' : auvStatus?.isOnline ? 'Online' : 'Offline'}
+                <p className="text-sm font-medium text-gray-500">pH Air</p>
+                <p className={`text-2xl font-bold ${phColor.text}`}>
+                  {isLoading ? '...' : telemetry ? telemetry.phLevel.toFixed(2) : '--'}
                 </p>
+                <p className="text-xs text-gray-400 mt-0.5">Normal: 7.5–8.4</p>
               </div>
-              <div className={`w-12 h-12 ${auvStatus?.isOnline ? 'bg-green-100' : 'bg-gray-100'} rounded-xl flex items-center justify-center`}>
-                <Activity className={`w-6 h-6 ${auvStatus?.isOnline ? 'text-green-600' : 'text-gray-600'}`} />
+              <div className={`w-11 h-11 ${phColor.bg} rounded-xl flex items-center justify-center`}>
+                <Droplets className={`w-5 h-5 ${phColor.text}`} />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Connection */}
+        {/* Suhu Air */}
         <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-2">
+          <CardContent className="px-6 py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600">Connection</p>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {isLoading ? 'Loading...' : auvStatus?.connectionStrength || 'Unknown'}
+                <p className="text-sm font-medium text-gray-500">Suhu Air</p>
+                <p className="text-2xl font-bold text-orange-600">
+                  {isLoading ? '...' : telemetry ? `${telemetry.waterTemp.toFixed(1)}°C` : '--'}
                 </p>
+                <p className="text-xs text-gray-400 mt-0.5">Sensor ROV</p>
               </div>
-              <div className={`w-12 h-12 ${connectionColor.bg} rounded-xl flex items-center justify-center`}>
-                <Wifi className={`w-6 h-6 ${connectionColor.text}`} />
+              <div className="w-11 h-11 bg-orange-100 rounded-xl flex items-center justify-center">
+                <Thermometer className="w-5 h-5 text-orange-600" />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Uptime */}
+        {/* Kedalaman */}
         <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-2">
+          <CardContent className="px-6 py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600">Uptime</p>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {isLoading ? 'Loading...' : auvStatus ? formatUptime(auvStatus.uptimeSeconds) : '0h 0m'}
+                <p className="text-sm font-medium text-gray-500">Kedalaman</p>
+                <p className="text-2xl font-bold text-blue-600">
+                  {isLoading ? '...' : auv ? `${auv.depth.toFixed(1)}m` : '--'}
                 </p>
+                <p className="text-xs text-gray-400 mt-0.5">IMU Pixhawk</p>
               </div>
-              <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
-                <Clock className="w-6 h-6 text-amber-600" />
+              <div className="w-11 h-11 bg-blue-100 rounded-xl flex items-center justify-center">
+                <Waves className="w-5 h-5 text-blue-600" />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Location */}
+        {/* Kecepatan */}
         <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-2">
+          <CardContent className="px-6 py-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-600">Location</p>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {isLoading ? 'Loading...' : auvStatus?.locationStatus || 'Active'}
+                <p className="text-sm font-medium text-gray-500">Kecepatan</p>
+                <p className="text-2xl font-bold text-purple-600">
+                  {isLoading ? '...' : auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
                 </p>
+                <p className="text-xs text-gray-400 mt-0.5">Sensor ROV</p>
               </div>
-              <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                <MapPin className="w-6 h-6 text-purple-600" />
+              <div className="w-11 h-11 bg-purple-100 rounded-xl flex items-center justify-center">
+                <Wind className="w-5 h-5 text-purple-600" />
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* ── Main Content ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Telemetry Data */}
-        <Card className="lg:col-span-2 border-0 shadow-sm">
-          <CardHeader className="pb-4">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Activity className="h-5 w-5 text-blue-600" />
-              Live Telemetry
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Attitude */}
-              <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl border border-blue-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Gauge className="h-5 w-5 text-blue-600" />
-                  <h3 className="font-semibold text-gray-900">Attitude</h3>
+
+        {/* Kiri: Telemetri lengkap */}
+        <div className="lg:col-span-2 space-y-4">
+
+          {/* Water Quality */}
+          <Card className="border-0 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Droplets className="h-5 w-5 text-blue-600" />
+                Kualitas Air — Live Sensor
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+
+                {/* pH */}
+                <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl border border-blue-200">
+                  <p className="text-xs font-medium text-blue-600 mb-1">pH Level</p>
+                  <p className={`text-2xl font-bold ${phColor.text}`}>
+                    {telemetry ? telemetry.phLevel.toFixed(2) : '--'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">Ideal: 7.5–8.4</p>
                 </div>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Roll</span>
-                    <span className="font-medium">
-                      {telemetry ? `${telemetry.rollDeg.toFixed(1)}°` : '--'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Pitch</span>
-                    <span className="font-medium">
-                      {telemetry ? `${telemetry.pitchDeg.toFixed(1)}°` : '--'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Yaw</span>
-                    <span className="font-medium">
-                      {telemetry ? `${telemetry.yawDeg.toFixed(1)}°` : '--'}
-                    </span>
-                  </div>
+
+                {/* TDS */}
+                <div className="p-4 bg-gradient-to-br from-teal-50 to-teal-100 rounded-xl border border-teal-200">
+                  <p className="text-xs font-medium text-teal-600 mb-1">TDS</p>
+                  <p className="text-2xl font-bold text-teal-700">
+                    {telemetry ? `${telemetry.tdsValue.toFixed(0)}` : '--'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">ppm</p>
+                </div>
+
+                {/* Dissolved Oxygen */}
+                <div className="p-4 bg-gradient-to-br from-cyan-50 to-cyan-100 rounded-xl border border-cyan-200">
+                  <p className="text-xs font-medium text-cyan-600 mb-1">Dissolved O₂</p>
+                  <p className={`text-2xl font-bold ${telemetry ? getDoColor(telemetry.dissolvedOxygen) : 'text-gray-400'}`}>
+                    {telemetry ? telemetry.dissolvedOxygen.toFixed(1) : '--'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">mg/L</p>
+                </div>
+
+                {/* Suhu */}
+                <div className="p-4 bg-gradient-to-br from-orange-50 to-orange-100 rounded-xl border border-orange-200">
+                  <p className="text-xs font-medium text-orange-600 mb-1">Suhu Air</p>
+                  <p className="text-2xl font-bold text-orange-700">
+                    {telemetry ? telemetry.waterTemp.toFixed(1) : '--'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">°C</p>
                 </div>
               </div>
+            </CardContent>
+          </Card>
 
-              {/* Compass */}
-              <div className="p-4 bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <MapPin className="h-5 w-5 text-indigo-600" />
-                  <h3 className="font-semibold text-gray-900">Compass</h3>
-                </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600">Heading</span>
-                    <span className="font-bold text-2xl text-indigo-600">
-                      {telemetry ? `${telemetry.headingDeg.toFixed(1)}°` : '--'}
-                    </span>
-                  </div>
-                </div>
-              </div>
+          {/* AUV Navigation */}
+          <Card className="border-0 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Navigation className="h-5 w-5 text-indigo-600" />
+                Navigasi ROV — IMU Pixhawk
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
 
-              {/* Battery */}
-              <div className="p-4 bg-gradient-to-br from-green-50 to-green-100 rounded-xl border border-green-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Battery className="h-5 w-5 text-green-600" />
-                  <h3 className="font-semibold text-gray-900">Battery</h3>
-                </div>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Level</span>
-                    <span className="font-semibold text-green-600">
-                      {telemetry ? `${telemetry.remainingPercent.toFixed(0)}%` : '--'}
-                    </span>
+                {/* Attitude */}
+                <div className="p-4 bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Gauge className="h-4 w-4 text-indigo-600" />
+                    <p className="text-xs font-semibold text-indigo-700">Attitude</p>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Voltage</span>
-                    <span className="font-medium">
-                      {telemetry ? `${telemetry.voltageV.toFixed(2)}V` : '--'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Current</span>
-                    <span className="font-medium">
-                      {telemetry?.currentA != null ? `${telemetry.currentA.toFixed(2)}A` : '--'}
-                    </span>
+                  <div className="space-y-1 text-sm">
+                    {[
+                      { label: 'Roll',  value: auv?.roll },
+                      { label: 'Pitch', value: auv?.pitch },
+                      { label: 'Yaw',   value: auv?.yaw },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="flex justify-between">
+                        <span className="text-gray-500">{label}</span>
+                        <span className="font-medium text-gray-800">
+                          {value != null ? `${value.toFixed(1)}°` : '--'}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
 
-              {/* Health */}
-              <div className="p-4 bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl border border-purple-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Activity className="h-5 w-5 text-purple-600" />
-                  <h3 className="font-semibold text-gray-900">Health</h3>
-                </div>
-                <div className="space-y-1 text-sm">
-                  {[
-                    { label: 'Gyroscope', key: 'gyroCal' },
-                    { label: 'Accelerometer', key: 'accelCal' },
-                    { label: 'Magnetometer', key: 'magCal' },
-                  ].map(({ label, key }) => (
-                    <div key={key} className="flex justify-between items-center">
-                      <span className="text-gray-600">{label}</span>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        telemetry?.[key]
-                          ? 'bg-green-200 text-green-800'
-                          : 'bg-red-200 text-red-800'
-                      }`}>
-                        {telemetry ? (telemetry[key] ? 'OK' : 'BAD') : '--'}
+                {/* Heading & Depth */}
+                <div className="p-4 bg-gradient-to-br from-violet-50 to-violet-100 rounded-xl border border-violet-200">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Compass className="h-4 w-4 text-violet-600" />
+                    <p className="text-xs font-semibold text-violet-700">Heading & Depth</p>
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Heading</span>
+                      <span className="font-bold text-violet-700">
+                        {auv?.heading ?? '--'}
                       </span>
                     </div>
-                  ))}
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Depth</span>
+                      <span className="font-medium text-gray-800">
+                        {auv ? `${auv.depth.toFixed(1)}m` : '--'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Speed</span>
+                      <span className="font-medium text-gray-800">
+                        {auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sensor IMU */}
+                <div className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Activity className="h-4 w-4 text-slate-600" />
+                    <p className="text-xs font-semibold text-slate-700">Sensor IMU</p>
+                  </div>
+                  <div className="space-y-1.5 text-sm">
+                    {[
+                      { label: 'Gyroscope',     value: auv?.gyroscope },
+                      { label: 'Accelerometer', value: auv?.accelerometer },
+                      { label: 'Magnetometer',  value: auv?.magnetometer },
+                    ].map(({ label, value }) => (
+                      <div key={label} className="flex justify-between items-center">
+                        <span className="text-gray-500 text-xs">{label}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                          value
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-400'
+                        }`}>
+                          {value ? 'Active' : 'N/A'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
 
-        {/* AUV Location Map */}
+        {/* Kanan: Peta Lokasi */}
         <Card className="border-0 shadow-sm">
-          <CardHeader className="pb-0">
-            <CardTitle className="flex items-center gap-2 text-lg">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base">
               <MapPin className="h-5 w-5 text-purple-600" />
-              AUV Detail Location
+              Lokasi Survei
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
+              {/* Map embed */}
               <div className="w-full h-48 rounded-xl overflow-hidden border border-gray-200 relative">
                 <iframe
                   src="https://www.google.com/maps/embed?pb=!1m14!1m12!1m3!1d3961.785!2d110.63642!3d-6.62177!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f15.1!5e0!3m2!1sen!2sid!4v1699123456789!5m2!1sen!2sid"
@@ -300,34 +329,33 @@ export default function DashboardContent({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              {/* Info navigasi ringkas */}
+              <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="space-y-2">
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Depth</span>
-                    <span className="font-medium text-gray-900">15.2m</span>
+                    <span className="text-gray-500">Depth</span>
+                    <span className="font-semibold text-blue-600">
+                      {auv ? `${auv.depth.toFixed(1)}m` : '--'}
+                    </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Speed</span>
-                    <span className="font-medium text-gray-900">2.3 kts</span>
+                    <span className="text-gray-500">Speed</span>
+                    <span className="font-medium text-gray-800">
+                      {auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
+                    </span>
                   </div>
                 </div>
                 <div className="space-y-2">
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Heading</span>
-                    <span className="font-medium text-gray-900">
-                      {telemetry ? `${telemetry.headingDeg.toFixed(0)}°` : '--'}
+                    <span className="text-gray-500">Heading</span>
+                    <span className="font-semibold text-violet-600">
+                      {auv?.heading ?? '--'}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Battery</span>
-                    <span className={`font-medium ${
-                      telemetry?.remainingPercent > 50
-                        ? 'text-green-600'
-                        : telemetry?.remainingPercent > 20
-                        ? 'text-yellow-600'
-                        : 'text-red-600'
-                    }`}>
-                      {telemetry ? `${telemetry.remainingPercent.toFixed(0)}%` : '--'}
+                    <span className="text-gray-500">pH</span>
+                    <span className={`font-semibold ${phColor.text}`}>
+                      {telemetry ? telemetry.phLevel.toFixed(2) : '--'}
                     </span>
                   </div>
                 </div>
