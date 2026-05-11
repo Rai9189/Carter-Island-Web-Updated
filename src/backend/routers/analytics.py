@@ -1,17 +1,22 @@
 """
-Router analytics — menggantikan:
-  - src/app/api/analytics/detections/route.ts   (GET)
-  - src/app/api/analytics/telemetry/route.ts    (GET)
-  - src/app/api/analytics/auv-status/route.ts   (GET)
+Router analytics — sesuai models.py baru C300.
+
+Perubahan dari versi lama:
+  - FishDetection + DetectionDetail → Detection
+  - Telemetry: kolom battery/attitude → ph_level/tds_value/dissolved_oxygen/water_temp/depth
+  - AUVStatus: kolom is_online/uptime → roll/pitch/yaw/depth/heading/speed
+  - Tambah endpoint: getSessionsByDate, getSessionById, getAllSessions,
+                     getAuvStatusAnalytics (SPPI-41/42/43/44)
 """
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database.connection import get_db
-from database.models import FishDetection, DetectionDetail, Telemetry, AUVStatus
+from database.models import Detection, Telemetry, AUVStatus, MonitoringSession
 from core.dependencies import get_current_user
 
 logger = logging.getLogger("carter-backend")
@@ -21,63 +26,61 @@ router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
 # ==========================
 # GET /api/analytics/detections
+# SPPI-39 getDetectionAnalytics
 # ==========================
 @router.get("/detections")
 def get_detection_analytics(
     hours: int = 24,
+    session_id: Optional[str] = None,
+    date: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    """
-    GET analitik deteksi ikan.
-    Port dari src/app/api/analytics/detections/route.ts
-    """
     start_time = datetime.utcnow() - timedelta(hours=hours)
+    query = db.query(Detection).filter(Detection.detected_at >= start_time)
 
-    detections = (
-        db.query(FishDetection)
-        .filter(FishDetection.timestamp >= start_time)
-        .order_by(FishDetection.timestamp.asc())
-        .all()
-    )
+    if session_id:
+        query = query.filter(Detection.session_id == session_id)
+
+    if date:
+        try:
+            dt = datetime.fromisoformat(date)
+            query = query.filter(
+                Detection.detected_at >= dt,
+                Detection.detected_at < dt + timedelta(days=1),
+            )
+        except ValueError:
+            pass
+
+    detections = query.order_by(Detection.detected_at.asc()).all()
 
     # Agregasi per jam
     hourly: dict = {}
     species: dict = {}
 
     for d in detections:
-        hour = d.timestamp.replace(minute=0, second=0, microsecond=0)
+        hour = d.detected_at.replace(minute=0, second=0, microsecond=0)
         hour_key = hour.isoformat()
         if hour_key not in hourly:
-            hourly[hour_key] = {"count": 0, "totalFish": 0}
+            hourly[hour_key] = {"count": 0}
         hourly[hour_key]["count"] += 1
-        hourly[hour_key]["totalFish"] += d.fish_count
+        species[d.species_name] = species.get(d.species_name, 0) + 1
 
-        for det in d.detection_details:
-            species[det.class_name] = species.get(det.class_name, 0) + 1
-
-    # Stats keseluruhan
-    total_fish = sum(d.fish_count for d in detections)
-    avg_conf = 0.0
-    all_details = [det for d in detections for det in d.detection_details]
-    if all_details:
-        avg_conf = sum(det.confidence for det in all_details) / len(all_details)
+    total = len(detections)
+    avg_conf = (
+        sum(d.confidence for d in detections) / total if total else 0.0
+    )
 
     return {
         "success": True,
         "data": {
             "summary": {
-                "totalDetections": len(detections),
-                "totalFish": total_fish,
+                "totalDetections": total,
                 "avgConfidence": round(avg_conf, 4),
                 "uniqueSpecies": len(species),
             },
             "timeSeries": [
-                {
-                    "time": time,
-                    "detections": data["count"],
-                    "fishCount": data["totalFish"],
-                }
+                {"time": time, "detections": data["count"]}
                 for time, data in hourly.items()
             ],
             "speciesDistribution": [
@@ -90,73 +93,82 @@ def get_detection_analytics(
 
 # ==========================
 # GET /api/analytics/telemetry
+# SPPI-29/40 getTelemetryAnalytics
 # ==========================
 @router.get("/telemetry")
 def get_telemetry_analytics(
     hours: int = 24,
+    session_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    """
-    GET analitik telemetri — battery, attitude, compass, health.
-    Port dari src/app/api/analytics/telemetry/route.ts
-    """
     start_time = datetime.utcnow() - timedelta(hours=hours)
+    query = db.query(Telemetry).filter(Telemetry.timestamp >= start_time)
+
+    if session_id:
+        query = query.filter(Telemetry.session_id == session_id)
+
+    if from_date:
+        try:
+            query = query.filter(
+                Telemetry.timestamp >= datetime.fromisoformat(from_date)
+            )
+        except ValueError:
+            pass
+
+    if to_date:
+        try:
+            query = query.filter(
+                Telemetry.timestamp <= datetime.fromisoformat(to_date)
+            )
+        except ValueError:
+            pass
 
     telemetry = (
-        db.query(Telemetry)
-        .filter(Telemetry.timestamp >= start_time)
-        .order_by(Telemetry.timestamp.asc())
-        .limit(288)
+        query.order_by(Telemetry.timestamp.asc())
+        .limit(500)
         .all()
     )
 
     latest = telemetry[-1] if telemetry else None
-    avg_battery = (
-        sum(t.remaining_percent for t in telemetry) / len(telemetry)
-        if telemetry else 0
-    )
+    count = len(telemetry)
+
+    avg_ph  = sum(t.ph_level for t in telemetry) / count if count else 0
+    avg_tds = sum(t.tds_value for t in telemetry) / count if count else 0
+    avg_do  = sum(t.dissolved_oxygen for t in telemetry) / count if count else 0
+    avg_temp = sum(t.water_temp for t in telemetry) / count if count else 0
 
     return {
         "success": True,
         "data": {
             "summary": {
-                "currentBattery": round(latest.remaining_percent, 1) if latest else "N/A",
-                "avgBattery": round(avg_battery, 1),
-                "currentVoltage": round(latest.voltage_v, 2) if latest else "N/A",
-                "dataPoints": len(telemetry),
+                "avgPh": round(avg_ph, 2),
+                "avgTds": round(avg_tds, 2),
+                "avgDo": round(avg_do, 2),
+                "avgTemp": round(avg_temp, 2),
+                "dataPoints": count,
+                "latestDepth": round(latest.depth, 2) if latest else 0,
             },
-            "battery": [
-                {
-                    "time": t.timestamp.isoformat(),
-                    "voltage": round(t.voltage_v, 2),
-                    "remaining": round(t.remaining_percent, 1),
-                }
+            "ph": [
+                {"time": t.timestamp.isoformat(), "value": round(t.ph_level, 2)}
                 for t in telemetry
             ],
-            "attitude": [
-                {
-                    "time": t.timestamp.isoformat(),
-                    "roll": round(t.roll_deg, 1),
-                    "pitch": round(t.pitch_deg, 1),
-                    "yaw": round(t.yaw_deg, 1),
-                }
+            "tds": [
+                {"time": t.timestamp.isoformat(), "value": round(t.tds_value, 2)}
                 for t in telemetry
             ],
-            "compass": [
-                {
-                    "time": t.timestamp.isoformat(),
-                    "heading": round(t.heading_deg, 1),
-                }
+            "dissolvedOxygen": [
+                {"time": t.timestamp.isoformat(), "value": round(t.dissolved_oxygen, 2)}
                 for t in telemetry
             ],
-            "health": [
-                {
-                    "time": t.timestamp.isoformat(),
-                    "gyro": 1 if t.gyro_cal else 0,
-                    "accel": 1 if t.accel_cal else 0,
-                    "mag": 1 if t.mag_cal else 0,
-                }
+            "temperature": [
+                {"time": t.timestamp.isoformat(), "value": round(t.water_temp, 2)}
+                for t in telemetry
+            ],
+            "depth": [
+                {"time": t.timestamp.isoformat(), "value": round(t.depth, 2)}
                 for t in telemetry
             ],
         },
@@ -165,72 +177,164 @@ def get_telemetry_analytics(
 
 # ==========================
 # GET /api/analytics/auv-status
+# SPPI-41 getAuvStatusAnalytics
 # ==========================
 @router.get("/auv-status")
 def get_auv_status_analytics(
     hours: int = 24,
+    session_id: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    """
-    GET analitik AUV status — uptime, connection distribution.
-    Port dari src/app/api/analytics/auv-status/route.ts
-    """
     start_time = datetime.utcnow() - timedelta(hours=hours)
+    query = db.query(AUVStatus).filter(AUVStatus.timestamp >= start_time)
+
+    if session_id:
+        query = query.filter(AUVStatus.session_id == session_id)
 
     status_data = (
-        db.query(AUVStatus)
-        .filter(AUVStatus.timestamp >= start_time)
-        .order_by(AUVStatus.timestamp.asc())
-        .limit(288)
+        query.order_by(AUVStatus.timestamp.asc())
+        .limit(500)
         .all()
     )
 
-    # Distribusi connection strength
-    conn_stats: dict = {}
-    for s in status_data:
-        conn_stats[s.connection_strength] = conn_stats.get(s.connection_strength, 0) + 1
-
-    # Uptime percentage
-    online_count = sum(1 for s in status_data if s.is_online)
-    uptime_pct = (online_count / len(status_data) * 100) if status_data else 0
-
-    # Avg uptime dalam menit
-    avg_uptime_sec = (
-        sum(s.uptime_seconds for s in status_data) / len(status_data)
-        if status_data else 0
-    )
-
     latest = status_data[-1] if status_data else None
+    count = len(status_data)
 
     return {
         "success": True,
         "data": {
             "summary": {
-                "uptimePercentage": round(uptime_pct, 1),
-                "avgUptimeMinutes": int(avg_uptime_sec // 60),
-                "totalStatusChecks": len(status_data),
-                "currentlyOnline": latest.is_online if latest else False,
+                "dataPoints": count,
+                "latestDepth": round(latest.depth, 2) if latest else 0,
+                "latestHeading": latest.heading if latest else "N",
+                "latestSpeed": round(latest.speed, 2) if latest else 0,
             },
-            "statusHistory": [
+            "attitude": [
                 {
                     "time": s.timestamp.isoformat(),
-                    "online": 1 if s.is_online else 0,
-                    "uptime": s.uptime_seconds,
-                    "connection": s.connection_strength,
+                    "roll": round(s.roll, 2),
+                    "pitch": round(s.pitch, 2),
+                    "yaw": round(s.yaw, 2),
                 }
                 for s in status_data
             ],
-            "uptimeHistory": [
+            "navigation": [
                 {
                     "time": s.timestamp.isoformat(),
-                    "uptime": s.uptime_seconds // 60,
+                    "depth": round(s.depth, 2),
+                    "speed": round(s.speed, 2),
+                    "heading": s.heading,
                 }
                 for s in status_data
-            ],
-            "connectionDistribution": [
-                {"status": status, "count": count}
-                for status, count in conn_stats.items()
             ],
         },
+    }
+
+
+# ==========================
+# GET /api/analytics/sessions/by-date
+# SPPI-42 getSessionsByDate
+# ==========================
+@router.get("/sessions/by-date")
+def get_sessions_by_date(
+    date: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Ambil daftar sesi berdasarkan tanggal.
+    Digunakan untuk mengisi dropdown Misi di halaman Analytics.
+    """
+    try:
+        dt = datetime.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan YYYY-MM-DD")
+
+    sessions = (
+        db.query(MonitoringSession)
+        .filter(
+            MonitoringSession.start_time >= dt,
+            MonitoringSession.start_time < dt + timedelta(days=1),
+        )
+        .order_by(MonitoringSession.start_time.asc())
+        .all()
+    )
+
+    return {
+        "success": True,
+        "data": [_format_session(s) for s in sessions],
+    }
+
+
+# ==========================
+# GET /api/analytics/sessions/{session_id}
+# SPPI-43 getSessionById
+# ==========================
+@router.get("/sessions/{session_id}")
+def get_session_by_id(
+    session_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Ambil detail satu sesi berdasarkan ID.
+    Digunakan halaman Analytics untuk label session setelah user memilih misi.
+    """
+    session = db.query(MonitoringSession).filter(
+        MonitoringSession.id == session_id
+    ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
+
+    return {"success": True, "data": _format_session(session)}
+
+
+# ==========================
+# GET /api/analytics/sessions
+# SPPI-44 getAllSessions
+# ==========================
+@router.get("/sessions")
+def get_all_sessions(
+    status: Optional[str] = None,
+    sort: str = "desc",
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Ambil seluruh sesi survei.
+    Digunakan halaman Historical Data untuk tabel Riwayat Misi.
+    """
+    query = db.query(MonitoringSession)
+
+    if status:
+        query = query.filter(MonitoringSession.status == status)
+
+    if sort == "asc":
+        query = query.order_by(MonitoringSession.start_time.asc())
+    else:
+        query = query.order_by(MonitoringSession.start_time.desc())
+
+    sessions = query.all()
+
+    return {
+        "success": True,
+        "data": [_format_session(s) for s in sessions],
+        "total": len(sessions),
+    }
+
+
+# ==========================
+# Helper
+# ==========================
+def _format_session(s: MonitoringSession) -> dict:
+    return {
+        "id": s.id,
+        "userId": s.user_id,
+        "locationName": s.location_name,
+        "startTime": s.start_time.isoformat(),
+        "endTime": s.end_time.isoformat() if s.end_time else None,
+        "status": s.status,
+        "createdAt": s.created_at.isoformat(),
     }
