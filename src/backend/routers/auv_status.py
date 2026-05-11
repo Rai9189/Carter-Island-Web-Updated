@@ -1,9 +1,12 @@
 """
-Router AUV status — menggantikan:
-  - src/app/api/auv-status/latest/route.ts  (GET latest)
-  - src/app/api/auv-status/route.ts         (GET list, POST)
-  - src/app/api/health/check/route.ts       (dipindah ke background task Fase 5)
-  - src/app/api/mediamtx/health/route.ts    (dipindah ke background task Fase 5)
+Router AUV status — data navigasi & attitude ROV dari IMU Pixhawk.
+
+Perubahan dari versi lama:
+  - Field lama (is_online, connection_strength, uptime_seconds) → dihapus
+  - Field baru: roll, pitch, yaw, depth, heading, speed, gyroscope, accel, magnet
+  - POST payload disesuaikan dengan data navigasi IMU
+  - session_id sekarang wajib (FK ke monitoring_sessions)
+  - Endpoint health check manual dihapus (sudah digantikan scheduler)
 """
 import logging
 from datetime import datetime, timezone
@@ -20,24 +23,26 @@ logger = logging.getLogger("carter-backend")
 
 router = APIRouter(prefix="/api/auv-status", tags=["AUV Status"])
 
-# IP Raspberry Pi dan MediaMTX — dipakai untuk health check manual
-RASPI_TELEMETRY_URL = "http://192.168.2.2:14552/telemetry"
-MEDIAMTX_URL = "http://192.168.2.2:8889/cam/"
-
 
 # ==========================
 # GET /api/auv-status/latest
 # ==========================
 @router.get("/latest")
 def get_latest_auv_status(
+    session_id: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
     """
-    GET status AUV terbaru.
-    Port dari src/app/api/auv-status/latest/route.ts
+    GET data navigasi AUV terbaru.
+    Opsional filter by session_id.
     """
-    auv_status = db.query(AUVStatus).order_by(AUVStatus.timestamp.desc()).first()
+    query = db.query(AUVStatus).order_by(AUVStatus.timestamp.desc())
+
+    if session_id:
+        query = query.filter(AUVStatus.session_id == session_id)
+
+    auv_status = query.first()
 
     if not auv_status:
         raise HTTPException(status_code=404, detail="Tidak ada data AUV status")
@@ -52,17 +57,21 @@ def get_latest_auv_status(
 def get_auv_status_list(
     limit: int = 10,
     offset: int = 0,
+    session_id: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
     """
-    GET list AUV status dengan pagination.
-    Port dari src/app/api/auv-status/route.ts GET
+    GET list data navigasi AUV dengan pagination.
     """
-    total = db.query(AUVStatus).count()
+    query = db.query(AUVStatus)
+
+    if session_id:
+        query = query.filter(AUVStatus.session_id == session_id)
+
+    total = query.count()
     status_list = (
-        db.query(AUVStatus)
-        .order_by(AUVStatus.timestamp.desc())
+        query.order_by(AUVStatus.timestamp.desc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -76,7 +85,7 @@ def get_auv_status_list(
 
 
 # ==========================
-# POST /api/auv-status — simpan status
+# POST /api/auv-status — simpan data navigasi
 # ==========================
 @router.post("", status_code=status.HTTP_201_CREATED)
 def save_auv_status(
@@ -85,35 +94,39 @@ def save_auv_status(
     _: dict = Depends(get_current_user),
 ):
     """
-    POST simpan AUV status.
-    Port dari src/app/api/auv-status/route.ts POST
-    """
-    is_online = body.get("isOnline")
-    connection_strength = body.get("connectionStrength", "")
-    uptime_seconds = body.get("uptimeSeconds")
+    POST simpan data navigasi & attitude ROV dari IMU Pixhawk.
 
-    if is_online is None or not connection_strength or uptime_seconds is None:
-        raise HTTPException(
-            status_code=400,
-            detail="isOnline, connectionStrength, uptimeSeconds wajib diisi"
-        )
+    Payload:
+        session_id    : str   — wajib, FK ke monitoring_sessions
+        roll          : float — rotasi sumbu X (deg)
+        pitch         : float — rotasi sumbu Y (deg)
+        yaw           : float — rotasi sumbu Z (deg)
+        depth         : float — kedalaman (meter)
+        heading       : str   — arah kompas (N/NE/E/SE/S/SW/W/NW atau derajat)
+        speed         : float — kecepatan (m/s)
+        gyroscope     : str   — JSON string data mentah gyroscope (opsional)
+        accelerometer : str   — JSON string data mentah accelerometer (opsional)
+        magnetometer  : str   — JSON string data mentah magnetometer (opsional)
+    """
+    session_id = body.get("session_id") or body.get("sessionId")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id wajib diisi")
 
     now = datetime.now(timezone.utc)
-    last_stream_time = None
-    if body.get("lastStreamTime"):
-        try:
-            last_stream_time = datetime.fromisoformat(body["lastStreamTime"])
-        except ValueError:
-            pass
 
     new_status = AUVStatus(
         id=generate_cuid(),
-        is_online=bool(is_online),
-        connection_strength=str(connection_strength),
-        uptime_seconds=int(uptime_seconds),
-        location_status=body.get("locationStatus", "Active"),
-        last_stream_time=last_stream_time,
+        session_id=session_id,
         timestamp=now,
+        roll=float(body.get("roll", 0.0)),
+        pitch=float(body.get("pitch", 0.0)),
+        yaw=float(body.get("yaw", 0.0)),
+        depth=float(body.get("depth", 0.0)),
+        heading=str(body.get("heading", "N")),
+        speed=float(body.get("speed", 0.0)),
+        gyroscope=body.get("gyroscope"),
+        accelerometer=body.get("accelerometer"),
+        magnetometer=body.get("magnetometer"),
         created_at=now,
     )
 
@@ -130,11 +143,16 @@ def save_auv_status(
 def _format_status(s: AUVStatus) -> dict:
     return {
         "id": s.id,
-        "isOnline": s.is_online,
-        "connectionStrength": s.connection_strength,
-        "uptimeSeconds": s.uptime_seconds,
-        "locationStatus": s.location_status,
-        "lastStreamTime": s.last_stream_time.isoformat() if s.last_stream_time else None,
+        "sessionId": s.session_id,
         "timestamp": s.timestamp.isoformat(),
+        "roll": s.roll,
+        "pitch": s.pitch,
+        "yaw": s.yaw,
+        "depth": s.depth,
+        "heading": s.heading,
+        "speed": s.speed,
+        "gyroscope": s.gyroscope,
+        "accelerometer": s.accelerometer,
+        "magnetometer": s.magnetometer,
         "createdAt": s.created_at.isoformat(),
     }
