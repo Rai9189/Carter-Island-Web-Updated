@@ -1,12 +1,11 @@
 """
-Router telemetri — menggantikan:
-  - src/app/api/telemetry/latest/route.ts  (GET latest)
-  - src/app/api/telemetry/route.ts         (GET list, POST)
-  - src/app/api/telemetry/fetch/route.ts   (DIHAPUS — diganti MAVLink langsung)
+Router telemetri — data kualitas air dari sensor ROV.
 
-Endpoint /api/telemetry/fetch dihapus karena di pengembangan
-selanjutnya telemetri akan diterima langsung via MAVLink di backend,
-bukan di-fetch dari Raspberry Pi lewat HTTP.
+Perubahan dari versi lama:
+  - Field lama (roll_deg, pitch_deg, battery, dll) → dihapus
+  - Field baru: ph_level, tds_value, dissolved_oxygen, water_temp, depth
+  - POST payload disesuaikan dengan sensor kualitas air
+  - session_id sekarang wajib (FK ke monitoring_sessions)
 """
 import logging
 from datetime import datetime, timezone
@@ -29,22 +28,25 @@ router = APIRouter(prefix="/api/telemetry", tags=["Telemetry"])
 # ==========================
 @router.get("/latest")
 def get_latest_telemetry(
+    session_id: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
     """
-    GET data telemetri terbaru.
-    Port dari src/app/api/telemetry/latest/route.ts
+    GET data kualitas air terbaru.
+    Opsional filter by session_id.
     """
-    telemetry = db.query(Telemetry).order_by(Telemetry.timestamp.desc()).first()
+    query = db.query(Telemetry).order_by(Telemetry.timestamp.desc())
+
+    if session_id:
+        query = query.filter(Telemetry.session_id == session_id)
+
+    telemetry = query.first()
 
     if not telemetry:
         raise HTTPException(status_code=404, detail="Tidak ada data telemetri")
 
-    return {
-        "success": True,
-        "data": _format_telemetry(telemetry),
-    }
+    return {"success": True, "data": _format_telemetry(telemetry)}
 
 
 # ==========================
@@ -54,17 +56,21 @@ def get_latest_telemetry(
 def get_telemetry_list(
     limit: int = 10,
     offset: int = 0,
+    session_id: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
     """
-    GET list telemetri dengan pagination.
-    Port dari src/app/api/telemetry/route.ts GET
+    GET list data kualitas air dengan pagination.
     """
-    total = db.query(Telemetry).count()
+    query = db.query(Telemetry)
+
+    if session_id:
+        query = query.filter(Telemetry.session_id == session_id)
+
+    total = query.count()
     telemetry_list = (
-        db.query(Telemetry)
-        .order_by(Telemetry.timestamp.desc())
+        query.order_by(Telemetry.timestamp.desc())
         .offset(offset)
         .limit(limit)
         .all()
@@ -78,7 +84,7 @@ def get_telemetry_list(
 
 
 # ==========================
-# POST /api/telemetry — simpan data telemetri
+# POST /api/telemetry — simpan data kualitas air
 # ==========================
 @router.post("", status_code=status.HTTP_201_CREATED)
 def save_telemetry(
@@ -87,39 +93,41 @@ def save_telemetry(
     _: dict = Depends(get_current_user),
 ):
     """
-    POST simpan data telemetri dari Raspberry Pi / MAVLink.
-    Port dari src/app/api/telemetry/route.ts POST
+    POST simpan data kualitas air dari sensor ROV.
 
-    Perbaikan bug dari versi lama:
-    - Versi lama pakai field gyroOk/accelOk/magOk (salah)
-    - Versi baru pakai gyro_cal/accel_cal/mag_cal (sesuai schema)
+    Payload:
+        session_id       : str  — wajib, FK ke monitoring_sessions
+        ph_level         : float
+        tds_value        : float
+        dissolved_oxygen : float
+        water_temp       : float
+        depth            : float (opsional, default 0.0)
     """
-    attitude = body.get("attitude", {})
-    compass = body.get("compass", {})
-    battery = body.get("battery", {})
-    health = body.get("health", {})
+    session_id = body.get("session_id") or body.get("sessionId")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id wajib diisi")
 
-    if not all([attitude, compass, battery, health]):
+    ph_level         = body.get("ph_level") or body.get("phLevel")
+    tds_value        = body.get("tds_value") or body.get("tdsValue")
+    dissolved_oxygen = body.get("dissolved_oxygen") or body.get("dissolvedOxygen")
+    water_temp       = body.get("water_temp") or body.get("waterTemp")
+
+    if any(v is None for v in [ph_level, tds_value, dissolved_oxygen, water_temp]):
         raise HTTPException(
             status_code=400,
-            detail="Field attitude, compass, battery, health wajib diisi"
+            detail="ph_level, tds_value, dissolved_oxygen, water_temp wajib diisi"
         )
 
     now = datetime.now(timezone.utc)
     telemetry = Telemetry(
         id=generate_cuid(),
-        roll_deg=float(attitude.get("roll_deg", 0)),
-        pitch_deg=float(attitude.get("pitch_deg", 0)),
-        yaw_deg=float(attitude.get("yaw_deg", 0)),
-        heading_deg=float(compass.get("heading_deg", 0)),
-        voltage_v=float(battery.get("voltage_v", 0)),
-        current_a=battery.get("current_a"),
-        remaining_percent=float(battery.get("remaining_percent", 0)),
-        consumed_mah=battery.get("consumed_mAh"),
-        gyro_cal=bool(health.get("gyro_cal", False)),
-        accel_cal=bool(health.get("accel_cal", False)),
-        mag_cal=bool(health.get("mag_cal", False)),
+        session_id=session_id,
         timestamp=now,
+        depth=float(body.get("depth") or body.get("depth") or 0.0),
+        ph_level=float(ph_level),
+        tds_value=float(tds_value),
+        dissolved_oxygen=float(dissolved_oxygen),
+        water_temp=float(water_temp),
         created_at=now,
     )
 
@@ -136,17 +144,12 @@ def save_telemetry(
 def _format_telemetry(t: Telemetry) -> dict:
     return {
         "id": t.id,
-        "rollDeg": t.roll_deg,
-        "pitchDeg": t.pitch_deg,
-        "yawDeg": t.yaw_deg,
-        "headingDeg": t.heading_deg,
-        "voltageV": t.voltage_v,
-        "currentA": t.current_a,
-        "remainingPercent": t.remaining_percent,
-        "consumedMah": t.consumed_mah,
-        "gyroCal": t.gyro_cal,
-        "accelCal": t.accel_cal,
-        "magCal": t.mag_cal,
+        "sessionId": t.session_id,
         "timestamp": t.timestamp.isoformat(),
+        "depth": t.depth,
+        "phLevel": t.ph_level,
+        "tdsValue": t.tds_value,
+        "dissolvedOxygen": t.dissolved_oxygen,
+        "waterTemp": t.water_temp,
         "createdAt": t.created_at.isoformat(),
     }
