@@ -10,7 +10,7 @@ from config import (
     RESIZE_HEIGHT,
     streaming_session_id
 )
-from database.crud.recordings import save_recording_to_db  # GANTI: tidak pakai httpx lagi
+from database.crud.recordings import save_recording_to_db
 
 # Jakarta timezone
 JAKARTA_TZ = pytz.timezone('Asia/Jakarta')
@@ -140,7 +140,7 @@ async def stop_recording(client_id: str) -> Optional[dict]:
             f"{recording_info['filename']} ({duration:.1f}s, {file_size/1024/1024:.2f}MB)"
         )
 
-        # GANTI: simpan langsung via SQLAlchemy, tidak lewat HTTP ke Next.js
+        # Simpan langsung via SQLAlchemy ke tabel video_paths
         db_id = await save_recording_to_db(
             session_id=recording_info["session_id"],
             filename=recording_info["filename"],
@@ -152,9 +152,9 @@ async def stop_recording(client_id: str) -> Optional[dict]:
         )
 
         if db_id:
-            logger.info(f"Recording saved to DB with id: {db_id}")
+            logger.info(f"VideoPath saved to DB with id: {db_id}")
         else:
-            logger.warning(f"Failed to save recording to DB")
+            logger.warning(f"Failed to save VideoPath to DB")
 
         return recording_data
 
