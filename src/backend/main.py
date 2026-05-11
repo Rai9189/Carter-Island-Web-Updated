@@ -24,6 +24,8 @@ from routers.auv_status import router as auv_status_router
 from routers.detections import router as detections_router
 from routers.recordings import router as recordings_router
 from routers.analytics import router as analytics_router
+from routers.sessions import router as sessions_router
+from routers.fish_counts import router as fish_counts_router
 
 # ==========================
 # Logging Setup
@@ -128,6 +130,8 @@ app.include_router(auv_status_router)
 app.include_router(detections_router)
 app.include_router(recordings_router)
 app.include_router(analytics_router)
+app.include_router(sessions_router)
+app.include_router(fish_counts_router)
 
 
 # ==========================
