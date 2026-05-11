@@ -1,14 +1,17 @@
 """
 Background scheduler menggunakan APScheduler.
 
-Menggantikan dua endpoint polling dari frontend:
-  - /api/health/check      → job tiap 5 detik
-  - /api/mediamtx/health   → digabung ke job yang sama
-  - /api/maintenance/cleanup → job tiap hari jam 00:00
+Job yang berjalan:
+  - health_check_job : tiap 5 detik — cek koneksi ROV & simpan status navigasi
+  - cleanup_job      : tiap hari jam 00:00 WIB — hapus data lama
 
-Dengan scheduler ini, frontend TIDAK perlu lagi polling
-health check ke server. Server yang aktif mengecek sendiri
-dan menyimpan hasilnya ke database.
+Perubahan dari versi lama:
+  - AUVStatus tidak lagi menyimpan is_online/connection_strength/uptime_seconds
+  - AUVStatus sekarang menyimpan data navigasi: roll/pitch/yaw/depth/heading/speed
+  - Telemetry tidak lagi disimpan di scheduler (data kualitas air dari sensor ROV,
+    bukan dari Raspberry Pi — akan diisi oleh endpoint sync SPPI-45)
+  - Health check tetap cek koneksi ke Raspberry Pi & MediaMTX,
+    tapi hanya simpan AUVStatus navigasi jika data tersedia
 """
 import logging
 import asyncio
@@ -23,13 +26,13 @@ logger = logging.getLogger("carter-backend")
 
 # URL Raspberry Pi dan MediaMTX
 RASPI_TELEMETRY_URL = "http://192.168.2.2:14552/telemetry"
-MEDIAMTX_URL = "http://192.168.2.2:8889/cam/"
+MEDIAMTX_URL        = "http://192.168.2.2:8889/cam/"
 
 # Singleton scheduler
 scheduler = AsyncIOScheduler(timezone="Asia/Jakarta")
 
-# State untuk tracking uptime
-_first_connected_time: datetime | None = None
+# State koneksi ROV
+_is_rov_online: bool = False
 
 
 # ==========================
@@ -37,134 +40,99 @@ _first_connected_time: datetime | None = None
 # ==========================
 async def health_check_job():
     """
-    Cek status AUV dan MediaMTX, simpan ke database.
-
-    Menggabungkan logika dari:
-    - /api/health/check       → cek telemetri Raspi, deteksi perubahan data
-    - /api/mediamtx/health    → cek aksesibilitas MediaMTX player
-
-    Hasil disimpan ke tabel auv_status.
+    Cek koneksi ROV via Raspberry Pi telemetri endpoint.
+    Jika data navigasi tersedia (attitude/compass), simpan ke auv_status.
+    Jika tidak tersedia, cek MediaMTX sebagai fallback (tidak simpan ke DB).
     """
-    global _first_connected_time
+    global _is_rov_online
 
     from database.connection import SessionLocal
-    from database.models import Telemetry, AUVStatus
+    from database.models import AUVStatus
     from core.cuid import generate_cuid
 
-    is_online = False
-    connection_strength = "Disconnected"
     telemetry_data = None
+    is_online = False
 
-    # ── Cek 1: Telemetri dari Raspberry Pi ──
+    # ── Cek 1: Telemetri navigasi dari Raspberry Pi ──
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(RASPI_TELEMETRY_URL)
 
-            if response.ok:
+            if response.is_success:
                 data = response.json()
 
-                if all(k in data for k in ("attitude", "compass", "battery", "health")):
+                # Pastikan payload navigasi tersedia
+                if all(k in data for k in ("attitude", "compass")):
                     telemetry_data = data
-
-                    # Simpan telemetri ke database
-                    db = SessionLocal()
-                    try:
-                        now = datetime.now(timezone.utc)
-
-                        # Cek apakah data berubah dari sebelumnya
-                        prev = db.query(Telemetry).order_by(
-                            Telemetry.timestamp.desc()
-                        ).first()
-
-                        data_changing = _is_telemetry_changing(data, prev)
-
-                        # Simpan telemetri baru
-                        telemetry = Telemetry(
-                            id=generate_cuid(),
-                            roll_deg=float(data["attitude"]["roll_deg"]),
-                            pitch_deg=float(data["attitude"]["pitch_deg"]),
-                            yaw_deg=float(data["attitude"]["yaw_deg"]),
-                            heading_deg=float(data["compass"]["heading_deg"]),
-                            voltage_v=float(data["battery"]["voltage_v"]),
-                            current_a=data["battery"].get("current_a"),
-                            remaining_percent=float(data["battery"]["remaining_percent"]),
-                            consumed_mah=data["battery"].get("consumed_mAh"),
-                            gyro_cal=bool(data["health"]["gyro_cal"]),
-                            accel_cal=bool(data["health"]["accel_cal"]),
-                            mag_cal=bool(data["health"]["mag_cal"]),
-                            timestamp=now,
-                            created_at=now,
-                        )
-                        db.add(telemetry)
-                        db.commit()
-
-                        # AUV online jika data berubah
-                        is_online = data_changing
-                        connection_strength = "Strong" if is_online else "Disconnected"
-
-                    except Exception as e:
-                        db.rollback()
-                        logger.error(f"Health check — DB error: {e}")
-                    finally:
-                        db.close()
+                    is_online = True
 
     except (httpx.ConnectError, httpx.TimeoutException):
-        # Raspi tidak bisa dihubungi — coba cek MediaMTX sebagai fallback
         pass
     except Exception as e:
         logger.warning(f"Health check — Raspi error: {e}")
 
-    # ── Cek 2: MediaMTX (fallback jika Raspi tidak terdeteksi) ──
+    # ── Cek 2: MediaMTX fallback (hanya cek koneksi, tidak simpan) ──
     if not is_online:
         try:
-            start = datetime.now(timezone.utc)
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.head(MEDIAMTX_URL)
-                response_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
-
                 if response.is_success:
                     is_online = True
-                    if response_ms < 500:
-                        connection_strength = "Strong"
-                    elif response_ms < 1500:
-                        connection_strength = "Moderate"
-                    else:
-                        connection_strength = "Weak"
-
         except (httpx.ConnectError, httpx.TimeoutException):
             pass
         except Exception as e:
             logger.warning(f"Health check — MediaMTX error: {e}")
 
-    # ── Simpan AUV status ke database ──
+    _is_rov_online = is_online
+
+    # ── Simpan AUVStatus navigasi jika data Raspi tersedia ──
+    if telemetry_data is None:
+        return  # Tidak ada data navigasi, tidak perlu simpan
+
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
+        attitude = telemetry_data.get("attitude", {})
+        compass  = telemetry_data.get("compass", {})
 
-        # Kelola first connected time untuk perhitungan uptime
-        global _first_connected_time
-        if is_online:
-            if _first_connected_time is None:
-                _first_connected_time = now
-        else:
-            _first_connected_time = None
+        # session_id diisi None karena health check berjalan
+        # di luar sesi misi — data navigasi background ini
+        # tidak terikat ke monitoring_sessions tertentu.
+        # Untuk data dalam sesi, gunakan endpoint sync SPPI-45.
+        #
+        # CATATAN: karena session_id nullable=False di model,
+        # health check hanya menyimpan jika ada sesi aktif.
+        # Jika tidak ada sesi aktif, skip saja.
+        from database.models import MonitoringSession
+        active_session = (
+            db.query(MonitoringSession)
+            .filter(MonitoringSession.status == "Running")
+            .order_by(MonitoringSession.start_time.desc())
+            .first()
+        )
 
-        uptime_seconds = 0
-        if is_online and _first_connected_time:
-            uptime_seconds = int((now - _first_connected_time).total_seconds())
+        if active_session is None:
+            logger.debug("Health check — tidak ada sesi aktif, skip simpan AUVStatus")
+            return
 
-        status = AUVStatus(
+        auv_status = AUVStatus(
             id=generate_cuid(),
-            is_online=is_online,
-            connection_strength=connection_strength,
-            uptime_seconds=uptime_seconds,
-            location_status="Active",
-            last_stream_time=_first_connected_time,
+            session_id=active_session.id,
             timestamp=now,
+            roll=float(attitude.get("roll_deg", 0.0)),
+            pitch=float(attitude.get("pitch_deg", 0.0)),
+            yaw=float(attitude.get("yaw_deg", 0.0)),
+            depth=float(telemetry_data.get("depth", 0.0)),
+            heading=str(compass.get("heading_deg", "0")),
+            speed=float(telemetry_data.get("speed", 0.0)),
+            gyroscope=None,
+            accelerometer=None,
+            magnetometer=None,
             created_at=now,
         )
-        db.add(status)
+        db.add(auv_status)
         db.commit()
+        logger.debug(f"AUVStatus saved — session {active_session.id[:8]}...")
 
     except Exception as e:
         db.rollback()
@@ -178,32 +146,31 @@ async def health_check_job():
 # ==========================
 async def cleanup_job():
     """
-    Hapus data telemetri dan AUV status yang lebih dari 7 hari.
-
-    Menggantikan endpoint /api/maintenance/cleanup yang
-    sebelumnya harus dipanggil manual dari frontend.
+    Hapus data telemetri, auv_status, dan deteksi yang lebih dari 30 hari.
+    Sesi yang sudah Completed/Aborted lebih dari 30 hari juga dihapus
+    beserta semua data anaknya (cascade).
     """
     from database.connection import SessionLocal
-    from database.models import Telemetry, AUVStatus
+    from database.models import Telemetry, AUVStatus, MonitoringSession
 
     db = SessionLocal()
     try:
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-        deleted_telemetry = db.query(Telemetry).filter(
-            Telemetry.timestamp < seven_days_ago
-        ).delete()
-
-        deleted_auv = db.query(AUVStatus).filter(
-            AUVStatus.timestamp < seven_days_ago
-        ).delete()
+        # Hapus sesi lama yang sudah selesai — cascade ke semua tabel anak
+        deleted_sessions = (
+            db.query(MonitoringSession)
+            .filter(
+                MonitoringSession.status.in_(["Completed", "Aborted"]),
+                MonitoringSession.created_at < thirty_days_ago,
+            )
+            .delete(synchronize_session=False)
+        )
 
         db.commit()
-
         logger.info(
-            f"Cleanup selesai — "
-            f"telemetry: {deleted_telemetry} rows, "
-            f"auv_status: {deleted_auv} rows dihapus"
+            f"Cleanup selesai — {deleted_sessions} sesi lama dihapus "
+            f"(beserta semua data terkait)"
         )
 
     except Exception as e:
@@ -214,33 +181,11 @@ async def cleanup_job():
 
 
 # ==========================
-# Helper — cek perubahan telemetri
+# Helper — cek status ROV
 # ==========================
-def _is_telemetry_changing(current: dict, previous) -> bool:
-    """
-    Cek apakah data telemetri berubah dari pembacaan sebelumnya.
-    AUV dianggap online hanya jika datanya aktif berubah.
-    """
-    if previous is None:
-        return True  # Pertama kali, anggap berubah
-
-    attitude_changed = (
-        current["attitude"]["roll_deg"] != previous.roll_deg or
-        current["attitude"]["pitch_deg"] != previous.pitch_deg or
-        current["attitude"]["yaw_deg"] != previous.yaw_deg
-    )
-    compass_changed = current["compass"]["heading_deg"] != previous.heading_deg
-    battery_changed = (
-        current["battery"]["voltage_v"] != previous.voltage_v or
-        current["battery"]["remaining_percent"] != previous.remaining_percent
-    )
-    health_changed = (
-        current["health"]["gyro_cal"] != previous.gyro_cal or
-        current["health"]["accel_cal"] != previous.accel_cal or
-        current["health"]["mag_cal"] != previous.mag_cal
-    )
-
-    return attitude_changed or compass_changed or battery_changed or health_changed
+def is_rov_online() -> bool:
+    """Cek apakah ROV sedang online berdasarkan hasil health check terakhir."""
+    return _is_rov_online
 
 
 # ==========================
@@ -251,17 +196,15 @@ def setup_scheduler():
     Daftarkan semua job ke scheduler.
     Dipanggil sekali saat startup dari main.py lifespan.
     """
-    # Job health check — tiap 5 detik
     scheduler.add_job(
         health_check_job,
         trigger=IntervalTrigger(seconds=5),
         id="health_check",
         name="AUV & MediaMTX Health Check",
         replace_existing=True,
-        misfire_grace_time=10,  # Toleransi keterlambatan 10 detik
+        misfire_grace_time=10,
     )
 
-    # Job cleanup — tiap hari jam 00:00 WIB
     scheduler.add_job(
         cleanup_job,
         trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Jakarta"),
