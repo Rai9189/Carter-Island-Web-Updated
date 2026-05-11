@@ -6,15 +6,21 @@ Router detections — menggantikan:
 POST deteksi tidak lagi lewat HTTP — YOLO simpan langsung
 via database/crud/detections.py. Router ini hanya untuk
 membaca data yang sudah tersimpan.
+
+Perubahan dari versi lama:
+  - Model FishDetection + DetectionDetail → Detection
+  - Filter class_name langsung di Detection.species_name
+  - Stats dihitung dari Detection langsung (tidak perlu join DetectionDetail)
 """
 import logging
 from typing import Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database.connection import get_db
-from database.models import FishDetection, DetectionDetail
+from database.models import Detection
 from core.dependencies import get_current_user
 
 logger = logging.getLogger("carter-backend")
@@ -30,30 +36,25 @@ def get_detections(
     page: int = 1,
     limit: int = 20,
     session_id: Optional[str] = None,
-    class_name: Optional[str] = None,
+    species_name: Optional[str] = None,
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
     """
     GET list deteksi dengan pagination + filter.
-    Port dari src/app/api/detections/route.ts GET
     """
     skip = (page - 1) * limit
-    query = db.query(FishDetection)
+    query = db.query(Detection)
 
     if session_id:
-        query = query.filter(FishDetection.session_id == session_id)
+        query = query.filter(Detection.session_id == session_id)
 
-    if class_name:
-        query = query.filter(
-            FishDetection.detection_details.any(
-                DetectionDetail.class_name.contains(class_name)
-            )
-        )
+    if species_name:
+        query = query.filter(Detection.species_name.contains(species_name))
 
     total = query.count()
     detections = (
-        query.order_by(FishDetection.timestamp.desc())
+        query.order_by(Detection.detected_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -83,63 +84,46 @@ def get_detection_stats(
     _: dict = Depends(get_current_user),
 ):
     """
-    GET statistik deteksi — total, per class, avg confidence.
-    Port dari src/app/api/detections/stats/route.ts
+    GET statistik deteksi — total, per spesies, avg confidence.
     """
-    from datetime import datetime
-
-    # Build filter untuk FishDetection
-    det_query = db.query(FishDetection)
-    detail_filter = []
+    query = db.query(Detection)
 
     if session_id:
-        det_query = det_query.filter(FishDetection.session_id == session_id)
-        detail_filter.append(DetectionDetail.detection.has(
-            FishDetection.session_id == session_id
-        ))
+        query = query.filter(Detection.session_id == session_id)
 
-    if start_date or end_date:
-        if start_date:
-            dt_start = datetime.fromisoformat(start_date)
-            det_query = det_query.filter(FishDetection.timestamp >= dt_start)
-            detail_filter.append(DetectionDetail.detection.has(
-                FishDetection.timestamp >= dt_start
-            ))
-        if end_date:
-            dt_end = datetime.fromisoformat(end_date)
-            det_query = det_query.filter(FishDetection.timestamp <= dt_end)
-            detail_filter.append(DetectionDetail.detection.has(
-                FishDetection.timestamp <= dt_end
-            ))
+    if start_date:
+        query = query.filter(
+            Detection.detected_at >= datetime.fromisoformat(start_date)
+        )
+    if end_date:
+        query = query.filter(
+            Detection.detected_at <= datetime.fromisoformat(end_date)
+        )
 
-    # Total deteksi dan jumlah ikan
-    total_detections = det_query.count()
-    total_fish = db.query(func.sum(FishDetection.fish_count)).scalar() or 0
-
-    # Detail query dengan filter
-    detail_query = db.query(DetectionDetail)
-    for f in detail_filter:
-        detail_query = detail_query.filter(f)
+    total_detections = query.count()
 
     # Avg confidence keseluruhan
-    avg_conf = db.query(func.avg(DetectionDetail.confidence)).scalar() or 0.0
+    avg_conf = db.query(
+        func.avg(Detection.confidence)
+    ).filter(
+        *([Detection.session_id == session_id] if session_id else [])
+    ).scalar() or 0.0
 
-    # Groupby class
-    by_class = (
-        db.query(
-            DetectionDetail.class_name,
-            func.count(DetectionDetail.class_name).label("count"),
-            func.avg(DetectionDetail.confidence).label("avg_conf"),
+    # Groupby species
+    by_species = (
+        query.with_entities(
+            Detection.species_name,
+            func.count(Detection.species_name).label("count"),
+            func.avg(Detection.confidence).label("avg_conf"),
         )
-        .group_by(DetectionDetail.class_name)
-        .order_by(func.count(DetectionDetail.class_name).desc())
+        .group_by(Detection.species_name)
+        .order_by(func.count(Detection.species_name).desc())
         .all()
     )
 
     # Recent 10 deteksi
     recent = (
-        det_query
-        .order_by(FishDetection.timestamp.desc())
+        query.order_by(Detection.detected_at.desc())
         .limit(10)
         .all()
     )
@@ -148,25 +132,64 @@ def get_detection_stats(
         "success": True,
         "data": {
             "totalDetections": total_detections,
-            "totalFishCount": int(total_fish),
             "averageConfidence": round(float(avg_conf), 4),
-            "detectionsByClass": [
+            "detectionsBySpecies": [
                 {
-                    "className": row.class_name,
+                    "speciesName": row.species_name,
                     "count": row.count,
                     "avgConfidence": round(float(row.avg_conf), 4),
                 }
-                for row in by_class
+                for row in by_species
             ],
-            "recentDetections": [
-                {
-                    "id": d.id,
-                    "timestamp": d.timestamp.isoformat(),
-                    "fishCount": d.fish_count,
-                    "classes": [det.class_name for det in d.detection_details],
-                }
-                for d in recent
-            ],
+            "recentDetections": [_format_detection(d) for d in recent],
+        },
+    }
+
+
+# ==========================
+# GET /api/detections/stats/by-session
+# ==========================
+@router.get("/stats/by-session")
+def get_detection_stats_by_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    GET distribusi persentase spesies ikan dalam satu sesi survei.
+    Digunakan oleh halaman Analytics untuk chart Species Distribution.
+    SPPI-36 getDetectionStatsBySession.
+    """
+    detections = (
+        db.query(Detection)
+        .filter(Detection.session_id == session_id)
+        .all()
+    )
+
+    total = len(detections)
+    if total == 0:
+        return {"success": True, "data": {"total": 0, "distribution": []}}
+
+    # Hitung per spesies
+    species_count: dict = {}
+    for d in detections:
+        species_count[d.species_name] = species_count.get(d.species_name, 0) + 1
+
+    distribution = [
+        {
+            "speciesName": sp,
+            "count": cnt,
+            "percentage": round(cnt / total * 100, 1),
+        }
+        for sp, cnt in sorted(species_count.items(), key=lambda x: -x[1])
+    ]
+
+    return {
+        "success": True,
+        "data": {
+            "sessionId": session_id,
+            "total": total,
+            "distribution": distribution,
         },
     }
 
@@ -174,26 +197,15 @@ def get_detection_stats(
 # ==========================
 # Helper
 # ==========================
-def _format_detection(d: FishDetection) -> dict:
+def _format_detection(d: Detection) -> dict:
     return {
         "id": d.id,
         "sessionId": d.session_id,
-        "timestamp": d.timestamp.isoformat(),
-        "fishCount": d.fish_count,
+        "telemetryId": d.telemetry_id,
+        "speciesName": d.species_name,
+        "confidence": d.confidence,
+        "depthAtDetection": d.depth_at_detection,
         "frameNumber": d.frame_number,
-        "imageUrl": d.image_url,
-        "detectionDetails": [
-            {
-                "id": det.id,
-                "className": det.class_name,
-                "confidence": det.confidence,
-                "boundingBox": {
-                    "x1": det.bbox_x1,
-                    "y1": det.bbox_y1,
-                    "x2": det.bbox_x2,
-                    "y2": det.bbox_y2,
-                },
-            }
-            for det in d.detection_details
-        ],
+        "detectedAt": d.detected_at.isoformat(),
+        "createdAt": d.created_at.isoformat(),
     }
