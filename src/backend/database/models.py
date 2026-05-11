@@ -1,327 +1,408 @@
 """
-SQLAlchemy models — 1:1 dari schema.prisma.
+SQLAlchemy models — sesuai dokumen C300 ROV El Torpedo V3.
 
-Semua nama tabel, kolom, dan index sama persis dengan Prisma
-sehingga data lama tetap bisa dibaca tanpa migrasi apapun.
+PENTING — Kompatibilitas dengan tabel users lama (Prisma):
+  Tabel users yang sudah ada menggunakan:
+    - VARCHAR(191) — bukan VARCHAR(36)
+    - COLLATE utf8mb4_unicode_ci
+    - ENGINE=InnoDB
+  Semua tabel baru harus menggunakan konfigurasi yang sama
+  agar Foreign Key ke users.id tidak ditolak MySQL (error 3780).
 
-Mapping Prisma → SQLAlchemy:
-  String       → String
-  Int          → Integer
-  Float        → Float
-  Boolean      → Boolean
-  DateTime     → DateTime
-  BigInt       → BigInteger
-  String @db.Text → Text
-  enum Role    → Enum('USER', 'ADMIN')
-  @id @default(cuid()) → String primary key (cuid dibuat manual)
-  @default(now()) → server_default=func.now()
-  @updatedAt   → onupdate=func.now()
+Struktur tabel sesuai ERD dokumen C300.02TA2026:
+  - users               : akun pengguna & hak akses (RBAC) — tidak diubah
+  - monitoring_sessions : tabel sentral sesi misi
+  - telemetries         : data kualitas air (pH, TDS, DO, suhu, depth)
+  - auv_status          : data navigasi & attitude ROV
+  - detections          : hasil identifikasi spesies ikan YOLOv8
+  - fish_counts         : agregasi jumlah populasi ikan per sesi
+  - video_paths         : metadata arsip rekaman video
+  - video_stream        : konfigurasi akses live streaming WebRTC
 """
+
 import enum
 from datetime import datetime
+from typing import Optional, List
+
 from sqlalchemy import (
-    String, Integer, Float, Boolean, DateTime, BigInteger,
-    Text, Enum, ForeignKey, Index, func
+    String, Integer, Float, Double, Boolean, DateTime,
+    BigInteger, Text, Enum, ForeignKey, Index, func
 )
 from sqlalchemy.orm import relationship, mapped_column, Mapped
-from typing import Optional, List
 
 from database.connection import Base
 from core.cuid import generate_cuid
 
+# ── Konstanta tipe kolom ─────────────────────────────────────
+# VARCHAR(191) — sama dengan tabel users yang dibuat Prisma.
+# Wajib dipakai di semua PK dan FK agar MySQL tidak error 3780.
+STR191 = String(191)
+STR255 = String(255)
+STR50  = String(50)
+
+# Opsi tabel MySQL — charset + collation + engine harus sama
+# dengan tabel users agar FK lintas-tabel bisa dibuat
+MYSQL_OPTS = {
+    "mysql_charset": "utf8mb4",
+    "mysql_collate": "utf8mb4_unicode_ci",
+    "mysql_engine":  "InnoDB",
+}
+
 
 # ==========================
-# Enum Role (sama dengan Prisma)
+# Enum Role
 # ==========================
 class Role(str, enum.Enum):
-    USER = "USER"
+    USER  = "USER"
     ADMIN = "ADMIN"
 
 
 # ==========================
-# Model: users
-# @@map("users")
+# Enum SessionStatus
 # ==========================
+class SessionStatus(str, enum.Enum):
+    RUNNING   = "Running"
+    COMPLETED = "Completed"
+    ABORTED   = "Aborted"
+
+
+# ============================================================
+# Model: users
+# Tidak diubah strukturnya — sudah ada di DB (dibuat Prisma).
+# Didefinisikan ulang di sini hanya untuk relasi ORM.
+# ============================================================
 class User(Base):
     __tablename__ = "users"
 
-    # @id @default(cuid())
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
-    )
-    # fullName String @map("full_name")
-    full_name: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    # email String @unique
-    email: Mapped[str] = mapped_column(
-        String(255), nullable=False, unique=True
-    )
-    # password String
-    password: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    # phoneNumber String @map("phone_number")
-    phone_number: Mapped[str] = mapped_column(
-        String(50), nullable=False
-    )
-    # role Role @default(USER)
-    role: Mapped[Role] = mapped_column(
-        Enum(Role), nullable=False, default=Role.USER
-    )
-    # createdAt DateTime @default(now()) @map("created_at")
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    full_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    email: Mapped[str] = mapped_column(STR255, nullable=False, unique=True)
+    password: Mapped[str] = mapped_column(STR255, nullable=False)
+    phone_number: Mapped[str] = mapped_column(STR50, nullable=False)
+    role: Mapped[Role] = mapped_column(Enum(Role), nullable=False, default=Role.USER)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
-    # updatedAt DateTime @updatedAt @map("updated_at")
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False,
-        server_default=func.now(), onupdate=func.now()
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    sessions: Mapped[List["MonitoringSession"]] = relationship(
+        "MonitoringSession", back_populates="user"
     )
 
     __table_args__ = (
-        # @@index([createdAt, id], map: "idx_users_created_at_id")
         Index("idx_users_created_at_id", "created_at", "id"),
-        # @@index([role, createdAt, id], map: "idx_users_role_created_at_id")
         Index("idx_users_role_created_at_id", "role", "created_at", "id"),
-        # @@index([createdAt(sort: Desc), id(sort: Desc)])
-        Index("idx_users_created_desc_id_desc", "created_at", "id"),
+        {"extend_existing": True, **MYSQL_OPTS},
     )
 
     def __repr__(self):
         return f"<User id={self.id} email={self.email} role={self.role}>"
 
 
-# ==========================
-# Model: fish_detections
-# @@map("fish_detections")
-# ==========================
-class FishDetection(Base):
-    __tablename__ = "fish_detections"
+# ============================================================
+# Model: monitoring_sessions
+# Tabel sentral — semua tabel lain punya FK ke tabel ini.
+# ============================================================
+class MonitoringSession(Base):
+    __tablename__ = "monitoring_sessions"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    user_id: Mapped[str] = mapped_column(
+        STR191, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    # sessionId String? @map("session_id")
-    session_id: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True
-    )
-    # timestamp DateTime @default(now())
-    timestamp: Mapped[datetime] = mapped_column(
+    location_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    start_time: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
-    # fishCount Int @map("fish_count")
-    fish_count: Mapped[int] = mapped_column(
-        Integer, nullable=False
-    )
-    # frameNumber Int? @map("frame_number")
-    frame_number: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True
-    )
-    # imageUrl String? @map("image_url") @db.Text
-    image_url: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[SessionStatus] = mapped_column(
+        Enum(SessionStatus), nullable=False, default=SessionStatus.RUNNING
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False,
-        server_default=func.now(), onupdate=func.now()
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    # Relasi ke DetectionDetail
-    detection_details: Mapped[List["DetectionDetail"]] = relationship(
-        "DetectionDetail",
-        back_populates="detection",
-        cascade="all, delete-orphan",
+    user: Mapped["User"] = relationship("User", back_populates="sessions")
+    telemetries: Mapped[List["Telemetry"]] = relationship(
+        "Telemetry", back_populates="session", cascade="all, delete-orphan"
+    )
+    auv_statuses: Mapped[List["AUVStatus"]] = relationship(
+        "AUVStatus", back_populates="session", cascade="all, delete-orphan"
+    )
+    detections: Mapped[List["Detection"]] = relationship(
+        "Detection", back_populates="session", cascade="all, delete-orphan"
+    )
+    fish_counts: Mapped[List["FishCount"]] = relationship(
+        "FishCount", back_populates="session", cascade="all, delete-orphan"
+    )
+    video_paths: Mapped[List["VideoPath"]] = relationship(
+        "VideoPath", back_populates="session", cascade="all, delete-orphan"
+    )
+    video_streams: Mapped[List["VideoStream"]] = relationship(
+        "VideoStream", back_populates="session", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
-        Index("idx_detections_timestamp", "timestamp"),
-        Index("idx_detections_session_timestamp", "session_id", "timestamp"),
-        Index("idx_detections_created_desc", "created_at"),
+        Index("idx_sessions_user_id", "user_id"),
+        Index("idx_sessions_status", "status"),
+        Index("idx_sessions_start_time_desc", "start_time"),
+        MYSQL_OPTS,
     )
 
     def __repr__(self):
-        return f"<FishDetection id={self.id} fish_count={self.fish_count}>"
+        return f"<MonitoringSession id={self.id} location={self.location_name} status={self.status}>"
 
 
-# ==========================
-# Model: detection_details
-# @@map("detection_details")
-# ==========================
-class DetectionDetail(Base):
-    __tablename__ = "detection_details"
+# ============================================================
+# Model: telemetries
+# Data kualitas air: pH, TDS, Dissolved Oxygen, suhu, kedalaman.
+# ============================================================
+class Telemetry(Base):
+    __tablename__ = "telemetries"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
-    )
-    # detectionId String @map("detection_id")
-    detection_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("fish_detections.id", ondelete="CASCADE"),
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # className String @map("class_name")
-    class_name: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    # confidence Float
-    confidence: Mapped[float] = mapped_column(
-        Float, nullable=False
-    )
-    # boundingBoxX1 Float @map("bbox_x1")
-    bbox_x1: Mapped[float] = mapped_column(Float, nullable=False)
-    # boundingBoxY1 Float @map("bbox_y1")
-    bbox_y1: Mapped[float] = mapped_column(Float, nullable=False)
-    # boundingBoxX2 Float @map("bbox_x2")
-    bbox_x2: Mapped[float] = mapped_column(Float, nullable=False)
-    # boundingBoxY2 Float @map("bbox_y2")
-    bbox_y2: Mapped[float] = mapped_column(Float, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
-    )
-
-    # Relasi ke FishDetection
-    detection: Mapped["FishDetection"] = relationship(
-        "FishDetection", back_populates="detection_details"
-    )
-
-    __table_args__ = (
-        Index("idx_details_detection_id", "detection_id"),
-        Index("idx_details_class_name", "class_name"),
-        Index("idx_details_confidence_desc", "confidence"),
-    )
-
-    def __repr__(self):
-        return f"<DetectionDetail id={self.id} class={self.class_name} conf={self.confidence}>"
-
-
-# ==========================
-# Model: recordings
-# @@map("recordings")
-# ==========================
-class Recording(Base):
-    __tablename__ = "recordings"
-
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
-    )
-    # sessionId String @map("session_id")
-    session_id: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    # filename String
-    filename: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    # filepath String @db.Text
-    filepath: Mapped[str] = mapped_column(
-        Text, nullable=False
-    )
-    # fileSize BigInt @map("file_size")
-    file_size: Mapped[int] = mapped_column(
-        BigInteger, nullable=False
-    )
-    # duration Float
-    duration: Mapped[float] = mapped_column(
-        Float, nullable=False
-    )
-    # startTime DateTime @map("start_time")
-    start_time: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False
-    )
-    # endTime DateTime @map("end_time")
-    end_time: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False,
-        server_default=func.now(), onupdate=func.now()
-    )
-
-    __table_args__ = (
-        Index("idx_recordings_session_id", "session_id"),
-        Index("idx_recordings_start_time_desc", "start_time"),
-        Index("idx_recordings_created_desc", "created_at"),
-    )
-
-    def __repr__(self):
-        return f"<Recording id={self.id} filename={self.filename}>"
-
-
-# ==========================
-# Model: telemetry
-# @@map("telemetry")
-# ==========================
-class Telemetry(Base):
-    __tablename__ = "telemetry"
-
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
-    )
-    # Attitude
-    roll_deg: Mapped[float] = mapped_column(Float, nullable=False)
-    pitch_deg: Mapped[float] = mapped_column(Float, nullable=False)
-    yaw_deg: Mapped[float] = mapped_column(Float, nullable=False)
-    # Compass
-    heading_deg: Mapped[float] = mapped_column(Float, nullable=False)
-    # Battery
-    voltage_v: Mapped[float] = mapped_column(Float, nullable=False)
-    current_a: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    remaining_percent: Mapped[float] = mapped_column(Float, nullable=False)
-    consumed_mah: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    # Health
-    gyro_cal: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    accel_cal: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    mag_cal: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    # Metadata
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    depth: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    ph_level: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    tds_value: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    dissolved_oxygen: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    water_temp: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
 
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="telemetries"
+    )
+    detections: Mapped[List["Detection"]] = relationship(
+        "Detection", back_populates="telemetry"
+    )
+
     __table_args__ = (
-        Index("idx_telemetry_timestamp_desc", "timestamp"),
-        Index("idx_telemetry_created_desc", "created_at"),
+        Index("idx_telemetries_session_id", "session_id"),
+        Index("idx_telemetries_timestamp_desc", "timestamp"),
+        Index("idx_telemetries_session_timestamp", "session_id", "timestamp"),
+        MYSQL_OPTS,
     )
 
     def __repr__(self):
-        return f"<Telemetry id={self.id} battery={self.remaining_percent}%>"
+        return (
+            f"<Telemetry id={self.id} ph={self.ph_level} "
+            f"tds={self.tds_value} do={self.dissolved_oxygen} "
+            f"temp={self.water_temp} depth={self.depth}>"
+        )
 
 
-# ==========================
+# ============================================================
 # Model: auv_status
-# @@map("auv_status")
-# ==========================
+# Data navigasi & attitude ROV dari IMU Pixhawk.
+# ============================================================
 class AUVStatus(Base):
     __tablename__ = "auv_status"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_cuid
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
     )
-    # isOnline Boolean @map("is_online")
-    is_online: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    # connectionStrength String @map("connection_strength")
-    connection_strength: Mapped[str] = mapped_column(
-        String(50), nullable=False
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
     )
-    # uptimeSeconds Int @map("uptime_seconds")
-    uptime_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    # locationStatus String @default("Active") @map("location_status")
-    location_status: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="Active"
+    roll: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    pitch: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    yaw: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    depth: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    heading: Mapped[str] = mapped_column(STR50, nullable=False, default="N")
+    speed: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    gyroscope: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    accelerometer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    magnetometer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
     )
-    # lastStreamTime DateTime? @map("last_stream_time")
-    last_stream_time: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True
+
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="auv_statuses"
     )
+
+    __table_args__ = (
+        Index("idx_auv_status_session_id", "session_id"),
+        Index("idx_auv_status_timestamp_desc", "timestamp"),
+        Index("idx_auv_status_session_timestamp", "session_id", "timestamp"),
+        MYSQL_OPTS,
+    )
+
+    def __repr__(self):
+        return (
+            f"<AUVStatus id={self.id} roll={self.roll} "
+            f"pitch={self.pitch} yaw={self.yaw} depth={self.depth}>"
+        )
+
+
+# ============================================================
+# Model: detections
+# Hasil identifikasi spesies ikan oleh YOLOv8.
+# Satu record = satu bounding box deteksi.
+# ============================================================
+class Detection(Base):
+    __tablename__ = "detections"
+
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    telemetry_id: Mapped[Optional[str]] = mapped_column(
+        STR191,
+        ForeignKey("telemetries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    species_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    confidence: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    depth_at_detection: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    frame_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="detections"
+    )
+    telemetry: Mapped[Optional["Telemetry"]] = relationship(
+        "Telemetry", back_populates="detections"
+    )
+
+    __table_args__ = (
+        Index("idx_detections_session_id", "session_id"),
+        Index("idx_detections_telemetry_id", "telemetry_id"),
+        Index("idx_detections_species_name", "species_name"),
+        Index("idx_detections_detected_at_desc", "detected_at"),
+        Index("idx_detections_session_species", "session_id", "species_name"),
+        MYSQL_OPTS,
+    )
+
+    def __repr__(self):
+        return (
+            f"<Detection id={self.id} species={self.species_name} "
+            f"conf={self.confidence:.2f} depth={self.depth_at_detection}>"
+        )
+
+
+# ============================================================
+# Model: fish_counts
+# Agregasi jumlah populasi ikan per spesies per sesi.
+# ============================================================
+class FishCount(Base):
+    __tablename__ = "fish_counts"
+
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    species_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="fish_counts"
+    )
+
+    __table_args__ = (
+        Index("idx_fish_counts_session_id", "session_id"),
+        Index("idx_fish_counts_species_name", "species_name"),
+        Index("idx_fish_counts_session_species", "session_id", "species_name"),
+        MYSQL_OPTS,
+    )
+
+    def __repr__(self):
+        return f"<FishCount id={self.id} species={self.species_name} total={self.total_count}>"
+
+
+# ============================================================
+# Model: video_paths
+# Metadata arsip file rekaman video hasil misi.
+# ============================================================
+class VideoPath(Base):
+    __tablename__ = "video_paths"
+
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    format: Mapped[str] = mapped_column(STR50, nullable=False, default="mp4")
+    duration: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="video_paths"
+    )
+
+    __table_args__ = (
+        Index("idx_video_paths_session_id", "session_id"),
+        Index("idx_video_paths_created_desc", "created_at"),
+        Index("idx_video_paths_file_name", "file_name"),
+        MYSQL_OPTS,
+    )
+
+    def __repr__(self):
+        return (
+            f"<VideoPath id={self.id} file={self.file_name} "
+            f"size={self.file_size} format={self.format}>"
+        )
+
+
+# ============================================================
+# Model: video_stream
+# Konfigurasi akses live streaming WebRTC/RTSP per sesi.
+# ============================================================
+class VideoStream(Base):
+    __tablename__ = "video_stream"
+
+    id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
+    session_id: Mapped[str] = mapped_column(
+        STR191,
+        ForeignKey("monitoring_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stream_url: Mapped[str] = mapped_column(Text, nullable=False)
+    format: Mapped[str] = mapped_column(STR50, nullable=False, default="WebRTC")
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -329,10 +410,15 @@ class AUVStatus(Base):
         DateTime, nullable=False, server_default=func.now()
     )
 
+    session: Mapped["MonitoringSession"] = relationship(
+        "MonitoringSession", back_populates="video_streams"
+    )
+
     __table_args__ = (
-        Index("idx_auv_status_timestamp_desc", "timestamp"),
-        Index("idx_auv_status_created_desc", "created_at"),
+        Index("idx_video_stream_session_id", "session_id"),
+        Index("idx_video_stream_timestamp_desc", "timestamp"),
+        MYSQL_OPTS,
     )
 
     def __repr__(self):
-        return f"<AUVStatus id={self.id} online={self.is_online}>"
+        return f"<VideoStream id={self.id} url={self.stream_url} format={self.format}>"
