@@ -1,20 +1,26 @@
 """
-CRUD operations untuk fish detections.
+CRUD operations untuk detections.
 Menggantikan HTTP call ke Next.js API /api/detections.
 
-Sebelumnya (database/detections.py):
+Sebelumnya:
     await http_client.post(f"{API_BASE_URL}/api/detections", json=payload)
 
 Sekarang:
     await save_detection_to_db(detections, frame_number)
     → langsung tulis ke MySQL via SQLAlchemy
+
+Perubahan dari versi lama:
+    - Model FishDetection + DetectionDetail → Detection (sesuai models.py baru)
+    - Satu bounding box = satu record Detection
+    - Tambah field species_name, depth_at_detection
+    - session_id sekarang FK ke monitoring_sessions
 """
 import logging
 from typing import List, Tuple, Optional
 from datetime import datetime, timezone
 
 from database.connection import SessionLocal
-from database.models import FishDetection, DetectionDetail
+from database.models import Detection
 from core.cuid import generate_cuid
 from config import streaming_session_id
 
@@ -24,15 +30,21 @@ logger = logging.getLogger("carter-backend")
 async def save_detection_to_db(
     detections: List[Tuple[int, int, int, int, float, str]],
     frame_number: Optional[int] = None,
+    session_id: Optional[str] = None,
+    telemetry_id: Optional[str] = None,
+    depth_at_detection: Optional[float] = None,
 ) -> bool:
     """
     Simpan hasil deteksi YOLO langsung ke MySQL via SQLAlchemy.
-    Menggantikan: http_client.post(f"{API_BASE_URL}/api/detections", ...)
+    Setiap bounding box disimpan sebagai satu record Detection.
 
     Args:
-        detections: List of (x1, y1, x2, y2, confidence, class_name)
-                    dari run_inference() di yolo_detector.py
-        frame_number: Nomor frame saat deteksi (opsional)
+        detections        : List of (x1, y1, x2, y2, confidence, class_name)
+                            dari run_inference() di yolo_detector.py
+        frame_number      : Nomor frame saat deteksi (opsional)
+        session_id        : ID sesi monitoring — jika None pakai streaming_session_id
+        telemetry_id      : FK ke telemetries untuk konteks kedalaman (opsional)
+        depth_at_detection: Kedalaman ROV saat deteksi terjadi (opsional)
 
     Returns:
         True jika berhasil disimpan, False jika gagal
@@ -40,43 +52,32 @@ async def save_detection_to_db(
     if not detections:
         return False
 
+    # Pakai session_id dari parameter, fallback ke streaming_session_id
+    active_session_id = session_id or streaming_session_id
+
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
 
-        # Buat record FishDetection utama
-        detection = FishDetection(
-            id=generate_cuid(),
-            session_id=streaming_session_id,
-            timestamp=now,
-            fish_count=len(detections),
-            frame_number=frame_number,
-            image_url=None,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(detection)
-        db.flush()  # Dapatkan ID tanpa commit dulu
-
-        # Buat record DetectionDetail untuk setiap ikan
+        # Setiap deteksi = satu record Detection
         for (x1, y1, x2, y2, conf, class_name) in detections:
-            detail = DetectionDetail(
+            detection = Detection(
                 id=generate_cuid(),
-                detection_id=detection.id,
-                class_name=class_name,
+                session_id=active_session_id,
+                telemetry_id=telemetry_id,
+                species_name=class_name,
                 confidence=float(conf),
-                bbox_x1=float(x1),
-                bbox_y1=float(y1),
-                bbox_x2=float(x2),
-                bbox_y2=float(y2),
+                depth_at_detection=depth_at_detection,
+                frame_number=frame_number,
+                detected_at=now,
                 created_at=now,
             )
-            db.add(detail)
+            db.add(detection)
 
         db.commit()
         logger.info(
             f"Saved {len(detections)} detections to DB "
-            f"(frame {frame_number}, session {streaming_session_id[:8]}...)"
+            f"(frame {frame_number}, session {active_session_id[:8]}...)"
         )
         return True
 
