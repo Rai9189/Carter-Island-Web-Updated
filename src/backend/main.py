@@ -27,6 +27,9 @@ from routers.analytics import router as analytics_router
 from routers.sessions import router as sessions_router
 from routers.fish_counts import router as fish_counts_router
 
+# Routers fase 5 — Sync ROV → Base Station (SPPI 45-47)
+from routers.sync import router as sync_router
+
 # ==========================
 # Logging Setup
 # ==========================
@@ -106,8 +109,6 @@ app = FastAPI(
 )
 
 # CORS middleware
-# FIX: allow_origins tidak boleh "*" kalau allow_credentials=True
-# Harus spesifik menyebut origin frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -132,6 +133,9 @@ app.include_router(recordings_router)
 app.include_router(analytics_router)
 app.include_router(sessions_router)
 app.include_router(fish_counts_router)
+
+# Sync ROV → Base Station (SPPI 45-47)
+app.include_router(sync_router)
 
 
 # ==========================

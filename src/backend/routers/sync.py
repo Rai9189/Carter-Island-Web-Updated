@@ -1,0 +1,352 @@
+"""
+Router sinkronisasi ROV → Base Station (SPPI 45-47).
+
+Alur "store and forward":
+  1. ROV simpan data dulu ke DB lokal (Jetson Orin)
+  2. Scheduler cek koneksi ke Base Station tiap X detik
+  3. Jika connect, ROV kirim data yang belum tersync (is_synced=False)
+  4. Base Station terima dan simpan ke DB-nya sendiri
+  5. ROV tandai data tersebut is_synced=True
+
+Endpoints (dijalankan di BASE STATION):
+  POST /api/sync/telemetry    — SPPI-45 syncTelemetry
+  POST /api/sync/detections   — SPPI-46 syncDetections
+  POST /api/sync/auv-status   — SPPI-47 syncAuvStatus
+  GET  /api/sync/status       — cek status sync terakhir
+"""
+import logging
+from datetime import datetime, timezone
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from database.connection import get_db
+from database.models import Telemetry, Detection, AUVStatus, MonitoringSession
+from core.dependencies import get_current_user
+from core.cuid import generate_cuid
+
+logger = logging.getLogger("carter-backend")
+
+router = APIRouter(prefix="/api/sync", tags=["Sync"])
+
+# ==========================
+# State sync terakhir (in-memory)
+# ==========================
+_last_sync_info = {
+    "telemetry": {"last_synced_at": None, "total_received": 0},
+    "detections": {"last_synced_at": None, "total_received": 0},
+    "auv_status": {"last_synced_at": None, "total_received": 0},
+}
+
+
+# ==========================
+# POST /api/sync/telemetry
+# SPPI-45 syncTelemetry
+# ==========================
+@router.post("/telemetry", status_code=status.HTTP_201_CREATED)
+def sync_telemetry(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Terima batch data telemetri dari ROV dan simpan ke DB Base Station.
+
+    Payload:
+        session_id : str  — ID sesi di ROV (harus sudah ada di Base Station)
+        records    : list — list data telemetri yang belum tersync
+
+    Setiap record:
+        rov_id           : str   — ID asli dari DB ROV (untuk dedup)
+        timestamp        : str   — ISO format
+        depth            : float
+        ph_level         : float
+        tds_value        : float
+        dissolved_oxygen : float
+        water_temp       : float
+    """
+    session_id = body.get("session_id") or body.get("sessionId")
+    records: List[dict] = body.get("records", [])
+
+    if not session_id or not records:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id dan records wajib diisi"
+        )
+
+    # Verifikasi sesi ada di Base Station
+    session = db.query(MonitoringSession).filter(
+        MonitoringSession.id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sesi {session_id} tidak ditemukan di Base Station. "
+                   "Pastikan sesi sudah dibuat terlebih dahulu."
+        )
+
+    saved = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+
+    for rec in records:
+        rov_id = rec.get("rov_id") or rec.get("id")
+
+        # Cek duplikat berdasarkan rov_id (hindari simpan 2x)
+        existing = db.query(Telemetry).filter(
+            Telemetry.rov_id == rov_id
+        ).first() if rov_id else None
+
+        if existing:
+            skipped += 1
+            continue
+
+        try:
+            ts = datetime.fromisoformat(rec.get("timestamp", now.isoformat()))
+        except (ValueError, TypeError):
+            ts = now
+
+        telemetry = Telemetry(
+            id=generate_cuid(),
+            rov_id=rov_id,
+            session_id=session_id,
+            timestamp=ts,
+            depth=float(rec.get("depth", 0.0)),
+            ph_level=float(rec.get("ph_level", 0.0)),
+            tds_value=float(rec.get("tds_value", 0.0)),
+            dissolved_oxygen=float(rec.get("dissolved_oxygen", 0.0)),
+            water_temp=float(rec.get("water_temp", 0.0)),
+            is_synced=True,
+            created_at=now,
+        )
+        db.add(telemetry)
+        saved += 1
+
+    db.commit()
+
+    _last_sync_info["telemetry"]["last_synced_at"] = now.isoformat()
+    _last_sync_info["telemetry"]["total_received"] += saved
+
+    logger.info(f"Sync telemetry — saved={saved} skipped={skipped} session={session_id[:8]}...")
+
+    return {
+        "success": True,
+        "message": f"{saved} telemetry records disimpan, {skipped} dilewati (duplikat)",
+        "saved": saved,
+        "skipped": skipped,
+    }
+
+
+# ==========================
+# POST /api/sync/detections
+# SPPI-46 syncDetections
+# ==========================
+@router.post("/detections", status_code=status.HTTP_201_CREATED)
+def sync_detections(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Terima batch hasil deteksi YOLO dari ROV dan simpan ke DB Base Station.
+
+    Payload:
+        session_id : str
+        records    : list
+
+    Setiap record:
+        rov_id             : str   — ID asli dari DB ROV (untuk dedup)
+        telemetry_id       : str   — opsional
+        species_name       : str
+        confidence         : float
+        depth_at_detection : float — opsional
+        frame_number       : int   — opsional
+        detected_at        : str   — ISO format
+    """
+    session_id = body.get("session_id") or body.get("sessionId")
+    records: List[dict] = body.get("records", [])
+
+    if not session_id or not records:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id dan records wajib diisi"
+        )
+
+    session = db.query(MonitoringSession).filter(
+        MonitoringSession.id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sesi {session_id} tidak ditemukan di Base Station."
+        )
+
+    saved = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+
+    for rec in records:
+        rov_id = rec.get("rov_id") or rec.get("id")
+
+        existing = db.query(Detection).filter(
+            Detection.rov_id == rov_id
+        ).first() if rov_id else None
+
+        if existing:
+            skipped += 1
+            continue
+
+        try:
+            detected_at = datetime.fromisoformat(rec.get("detected_at", now.isoformat()))
+        except (ValueError, TypeError):
+            detected_at = now
+
+        detection = Detection(
+            id=generate_cuid(),
+            rov_id=rov_id,
+            session_id=session_id,
+            telemetry_id=rec.get("telemetry_id"),
+            species_name=rec.get("species_name", "unknown"),
+            confidence=float(rec.get("confidence", 0.0)),
+            depth_at_detection=rec.get("depth_at_detection"),
+            frame_number=rec.get("frame_number"),
+            detected_at=detected_at,
+            is_synced=True,
+            created_at=now,
+        )
+        db.add(detection)
+        saved += 1
+
+    db.commit()
+
+    _last_sync_info["detections"]["last_synced_at"] = now.isoformat()
+    _last_sync_info["detections"]["total_received"] += saved
+
+    logger.info(f"Sync detections — saved={saved} skipped={skipped} session={session_id[:8]}...")
+
+    return {
+        "success": True,
+        "message": f"{saved} detection records disimpan, {skipped} dilewati (duplikat)",
+        "saved": saved,
+        "skipped": skipped,
+    }
+
+
+# ==========================
+# POST /api/sync/auv-status
+# SPPI-47 syncAuvStatus
+# ==========================
+@router.post("/auv-status", status_code=status.HTTP_201_CREATED)
+def sync_auv_status(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Terima batch data navigasi AUV dari ROV dan simpan ke DB Base Station.
+
+    Payload:
+        session_id : str
+        records    : list
+
+    Setiap record:
+        rov_id        : str   — ID asli dari DB ROV (untuk dedup)
+        timestamp     : str   — ISO format
+        roll          : float
+        pitch         : float
+        yaw           : float
+        depth         : float
+        heading       : str
+        speed         : float
+        gyroscope     : str   — opsional
+        accelerometer : str   — opsional
+        magnetometer  : str   — opsional
+    """
+    session_id = body.get("session_id") or body.get("sessionId")
+    records: List[dict] = body.get("records", [])
+
+    if not session_id or not records:
+        raise HTTPException(
+            status_code=400,
+            detail="session_id dan records wajib diisi"
+        )
+
+    session = db.query(MonitoringSession).filter(
+        MonitoringSession.id == session_id
+    ).first()
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sesi {session_id} tidak ditemukan di Base Station."
+        )
+
+    saved = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+
+    for rec in records:
+        rov_id = rec.get("rov_id") or rec.get("id")
+
+        existing = db.query(AUVStatus).filter(
+            AUVStatus.rov_id == rov_id
+        ).first() if rov_id else None
+
+        if existing:
+            skipped += 1
+            continue
+
+        try:
+            ts = datetime.fromisoformat(rec.get("timestamp", now.isoformat()))
+        except (ValueError, TypeError):
+            ts = now
+
+        auv_status = AUVStatus(
+            id=generate_cuid(),
+            rov_id=rov_id,
+            session_id=session_id,
+            timestamp=ts,
+            roll=float(rec.get("roll", 0.0)),
+            pitch=float(rec.get("pitch", 0.0)),
+            yaw=float(rec.get("yaw", 0.0)),
+            depth=float(rec.get("depth", 0.0)),
+            heading=str(rec.get("heading", "N")),
+            speed=float(rec.get("speed", 0.0)),
+            gyroscope=rec.get("gyroscope"),
+            accelerometer=rec.get("accelerometer"),
+            magnetometer=rec.get("magnetometer"),
+            is_synced=True,
+            created_at=now,
+        )
+        db.add(auv_status)
+        saved += 1
+
+    db.commit()
+
+    _last_sync_info["auv_status"]["last_synced_at"] = now.isoformat()
+    _last_sync_info["auv_status"]["total_received"] += saved
+
+    logger.info(f"Sync auv_status — saved={saved} skipped={skipped} session={session_id[:8]}...")
+
+    return {
+        "success": True,
+        "message": f"{saved} auv_status records disimpan, {skipped} dilewati (duplikat)",
+        "saved": saved,
+        "skipped": skipped,
+    }
+
+
+# ==========================
+# GET /api/sync/status
+# Cek info sync terakhir
+# ==========================
+@router.get("/status")
+def get_sync_status(
+    _: dict = Depends(get_current_user),
+):
+    """
+    Tampilkan info sinkronisasi terakhir untuk monitoring.
+    """
+    return {
+        "success": True,
+        "data": _last_sync_info,
+    }

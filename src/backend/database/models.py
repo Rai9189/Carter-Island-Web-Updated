@@ -18,6 +18,10 @@ Struktur tabel sesuai ERD dokumen C300.02TA2026:
   - fish_counts         : agregasi jumlah populasi ikan per sesi
   - video_paths         : metadata arsip rekaman video
   - video_stream        : konfigurasi akses live streaming WebRTC
+
+Perubahan v2 — SPPI 45/46/47 Sync ROV → Base Station:
+  - Tambah kolom `rov_id`    di Telemetry, Detection, AUVStatus
+  - Tambah kolom `is_synced` di Telemetry, Detection, AUVStatus
 """
 
 import enum
@@ -34,14 +38,10 @@ from database.connection import Base
 from core.cuid import generate_cuid
 
 # ── Konstanta tipe kolom ─────────────────────────────────────
-# VARCHAR(191) — sama dengan tabel users yang dibuat Prisma.
-# Wajib dipakai di semua PK dan FK agar MySQL tidak error 3780.
 STR191 = String(191)
 STR255 = String(255)
 STR50  = String(50)
 
-# Opsi tabel MySQL — charset + collation + engine harus sama
-# dengan tabel users agar FK lintas-tabel bisa dibuat
 MYSQL_OPTS = {
     "mysql_charset": "utf8mb4",
     "mysql_collate": "utf8mb4_unicode_ci",
@@ -68,8 +68,6 @@ class SessionStatus(str, enum.Enum):
 
 # ============================================================
 # Model: users
-# Tidak diubah strukturnya — sudah ada di DB (dibuat Prisma).
-# Didefinisikan ulang di sini hanya untuk relasi ORM.
 # ============================================================
 class User(Base):
     __tablename__ = "users"
@@ -103,7 +101,6 @@ class User(Base):
 
 # ============================================================
 # Model: monitoring_sessions
-# Tabel sentral — semua tabel lain punya FK ke tabel ini.
 # ============================================================
 class MonitoringSession(Base):
     __tablename__ = "monitoring_sessions"
@@ -161,6 +158,11 @@ class MonitoringSession(Base):
 # ============================================================
 # Model: telemetries
 # Data kualitas air: pH, TDS, Dissolved Oxygen, suhu, kedalaman.
+#
+# Kolom sync (SPPI-45):
+#   rov_id    — ID asli dari DB ROV, diisi Base Station untuk dedup
+#   is_synced — False = belum dikirim ke Base Station (default di ROV)
+#               True  = sudah berhasil dikirim/diterima
 # ============================================================
 class Telemetry(Base):
     __tablename__ = "telemetries"
@@ -179,6 +181,10 @@ class Telemetry(Base):
     tds_value: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
     dissolved_oxygen: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
     water_temp: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    # ── Sync columns ─────────────────────────────────────────
+    rov_id: Mapped[Optional[str]] = mapped_column(STR191, nullable=True)
+    is_synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # ─────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -194,6 +200,8 @@ class Telemetry(Base):
         Index("idx_telemetries_session_id", "session_id"),
         Index("idx_telemetries_timestamp_desc", "timestamp"),
         Index("idx_telemetries_session_timestamp", "session_id", "timestamp"),
+        Index("idx_telemetries_is_synced", "is_synced"),
+        Index("idx_telemetries_rov_id", "rov_id"),
         MYSQL_OPTS,
     )
 
@@ -208,6 +216,10 @@ class Telemetry(Base):
 # ============================================================
 # Model: auv_status
 # Data navigasi & attitude ROV dari IMU Pixhawk.
+#
+# Kolom sync (SPPI-47):
+#   rov_id    — ID asli dari DB ROV, diisi Base Station untuk dedup
+#   is_synced — False = belum dikirim ke Base Station (default di ROV)
 # ============================================================
 class AUVStatus(Base):
     __tablename__ = "auv_status"
@@ -230,6 +242,10 @@ class AUVStatus(Base):
     gyroscope: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     accelerometer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     magnetometer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # ── Sync columns ─────────────────────────────────────────
+    rov_id: Mapped[Optional[str]] = mapped_column(STR191, nullable=True)
+    is_synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # ─────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -242,6 +258,8 @@ class AUVStatus(Base):
         Index("idx_auv_status_session_id", "session_id"),
         Index("idx_auv_status_timestamp_desc", "timestamp"),
         Index("idx_auv_status_session_timestamp", "session_id", "timestamp"),
+        Index("idx_auv_status_is_synced", "is_synced"),
+        Index("idx_auv_status_rov_id", "rov_id"),
         MYSQL_OPTS,
     )
 
@@ -255,7 +273,10 @@ class AUVStatus(Base):
 # ============================================================
 # Model: detections
 # Hasil identifikasi spesies ikan oleh YOLOv8.
-# Satu record = satu bounding box deteksi.
+#
+# Kolom sync (SPPI-46):
+#   rov_id    — ID asli dari DB ROV, diisi Base Station untuk dedup
+#   is_synced — False = belum dikirim ke Base Station (default di ROV)
 # ============================================================
 class Detection(Base):
     __tablename__ = "detections"
@@ -278,6 +299,10 @@ class Detection(Base):
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    # ── Sync columns ─────────────────────────────────────────
+    rov_id: Mapped[Optional[str]] = mapped_column(STR191, nullable=True)
+    is_synced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # ─────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -295,6 +320,8 @@ class Detection(Base):
         Index("idx_detections_species_name", "species_name"),
         Index("idx_detections_detected_at_desc", "detected_at"),
         Index("idx_detections_session_species", "session_id", "species_name"),
+        Index("idx_detections_is_synced", "is_synced"),
+        Index("idx_detections_rov_id", "rov_id"),
         MYSQL_OPTS,
     )
 
@@ -307,7 +334,6 @@ class Detection(Base):
 
 # ============================================================
 # Model: fish_counts
-# Agregasi jumlah populasi ikan per spesies per sesi.
 # ============================================================
 class FishCount(Base):
     __tablename__ = "fish_counts"
@@ -347,7 +373,6 @@ class FishCount(Base):
 
 # ============================================================
 # Model: video_paths
-# Metadata arsip file rekaman video hasil misi.
 # ============================================================
 class VideoPath(Base):
     __tablename__ = "video_paths"
@@ -390,7 +415,6 @@ class VideoPath(Base):
 
 # ============================================================
 # Model: video_stream
-# Konfigurasi akses live streaming WebRTC/RTSP per sesi.
 # ============================================================
 class VideoStream(Base):
     __tablename__ = "video_stream"

@@ -2,16 +2,16 @@
 Background scheduler menggunakan APScheduler.
 
 Job yang berjalan:
-  - health_check_job : tiap 5 detik — cek koneksi ROV & simpan status navigasi
-  - cleanup_job      : tiap hari jam 00:00 WIB — hapus data lama
+  - health_check_job    : tiap 5 detik — cek koneksi ROV & simpan status navigasi
+  - cleanup_job         : tiap hari jam 00:00 WIB — hapus data lama
+  - sync_telemetry_job  : tiap X detik — SPPI-45 kirim telemetri ke Base Station
+  - sync_detections_job : tiap X detik — SPPI-46 kirim deteksi ke Base Station
+  - sync_auv_status_job : tiap X detik — SPPI-47 kirim auv_status ke Base Station
 
-Perubahan dari versi lama:
-  - AUVStatus tidak lagi menyimpan is_online/connection_strength/uptime_seconds
-  - AUVStatus sekarang menyimpan data navigasi: roll/pitch/yaw/depth/heading/speed
-  - Telemetry tidak lagi disimpan di scheduler (data kualitas air dari sensor ROV,
-    bukan dari Raspberry Pi — akan diisi oleh endpoint sync SPPI-45)
-  - Health check tetap cek koneksi ke Raspberry Pi & MediaMTX,
-    tapi hanya simpan AUVStatus navigasi jika data tersedia
+Catatan sync:
+  - Job sync hanya aktif jika BASE_STATION_URL diisi di .env
+  - Jika Base Station tidak dapat dijangkau, data tetap aman di ROV (is_synced=False)
+  - Saat koneksi pulih, scheduler otomatis retry di interval berikutnya
 """
 import logging
 import asyncio
@@ -21,6 +21,8 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+
+from config import BASE_STATION_URL, BASE_STATION_SYNC_TOKEN, SYNC_INTERVAL_SECONDS
 
 logger = logging.getLogger("carter-backend")
 
@@ -42,7 +44,6 @@ async def health_check_job():
     """
     Cek koneksi ROV via Raspberry Pi telemetri endpoint.
     Jika data navigasi tersedia (attitude/compass), simpan ke auv_status.
-    Jika tidak tersedia, cek MediaMTX sebagai fallback (tidak simpan ke DB).
     """
     global _is_rov_online
 
@@ -60,8 +61,6 @@ async def health_check_job():
 
             if response.is_success:
                 data = response.json()
-
-                # Pastikan payload navigasi tersedia
                 if all(k in data for k in ("attitude", "compass")):
                     telemetry_data = data
                     is_online = True
@@ -71,7 +70,7 @@ async def health_check_job():
     except Exception as e:
         logger.warning(f"Health check — Raspi error: {e}")
 
-    # ── Cek 2: MediaMTX fallback (hanya cek koneksi, tidak simpan) ──
+    # ── Cek 2: MediaMTX fallback ──
     if not is_online:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -85,9 +84,8 @@ async def health_check_job():
 
     _is_rov_online = is_online
 
-    # ── Simpan AUVStatus navigasi jika data Raspi tersedia ──
     if telemetry_data is None:
-        return  # Tidak ada data navigasi, tidak perlu simpan
+        return
 
     db = SessionLocal()
     try:
@@ -95,14 +93,6 @@ async def health_check_job():
         attitude = telemetry_data.get("attitude", {})
         compass  = telemetry_data.get("compass", {})
 
-        # session_id diisi None karena health check berjalan
-        # di luar sesi misi — data navigasi background ini
-        # tidak terikat ke monitoring_sessions tertentu.
-        # Untuk data dalam sesi, gunakan endpoint sync SPPI-45.
-        #
-        # CATATAN: karena session_id nullable=False di model,
-        # health check hanya menyimpan jika ada sesi aktif.
-        # Jika tidak ada sesi aktif, skip saja.
         from database.models import MonitoringSession
         active_session = (
             db.query(MonitoringSession)
@@ -128,6 +118,8 @@ async def health_check_job():
             gyroscope=None,
             accelerometer=None,
             magnetometer=None,
+            rov_id=None,
+            is_synced=False,
             created_at=now,
         )
         db.add(auv_status)
@@ -146,18 +138,16 @@ async def health_check_job():
 # ==========================
 async def cleanup_job():
     """
-    Hapus data telemetri, auv_status, dan deteksi yang lebih dari 30 hari.
-    Sesi yang sudah Completed/Aborted lebih dari 30 hari juga dihapus
+    Hapus sesi yang sudah Completed/Aborted lebih dari 30 hari
     beserta semua data anaknya (cascade).
     """
     from database.connection import SessionLocal
-    from database.models import Telemetry, AUVStatus, MonitoringSession
+    from database.models import MonitoringSession
 
     db = SessionLocal()
     try:
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
 
-        # Hapus sesi lama yang sudah selesai — cascade ke semua tabel anak
         deleted_sessions = (
             db.query(MonitoringSession)
             .filter(
@@ -184,7 +174,6 @@ async def cleanup_job():
 # Helper — cek status ROV
 # ==========================
 def is_rov_online() -> bool:
-    """Cek apakah ROV sedang online berdasarkan hasil health check terakhir."""
     return _is_rov_online
 
 
@@ -196,6 +185,7 @@ def setup_scheduler():
     Daftarkan semua job ke scheduler.
     Dipanggil sekali saat startup dari main.py lifespan.
     """
+    # Job 1 — Health check
     scheduler.add_job(
         health_check_job,
         trigger=IntervalTrigger(seconds=5),
@@ -205,6 +195,7 @@ def setup_scheduler():
         misfire_grace_time=10,
     )
 
+    # Job 2 — Cleanup harian
     scheduler.add_job(
         cleanup_job,
         trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Jakarta"),
@@ -214,5 +205,49 @@ def setup_scheduler():
     )
 
     logger.info("Scheduler jobs registered:")
-    logger.info("  - health_check_job: tiap 5 detik")
-    logger.info("  - cleanup_job: tiap hari jam 00:00 WIB")
+    logger.info("  - health_check_job : tiap 5 detik")
+    logger.info("  - cleanup_job      : tiap hari jam 00:00 WIB")
+
+    # Job 3/4/5 — Sync ROV → Base Station (hanya aktif jika dikonfigurasi)
+    if BASE_STATION_URL and BASE_STATION_SYNC_TOKEN:
+        from core.sync_sender import (
+            init_sync_sender,
+            sync_telemetry_job,
+            sync_detections_job,
+            sync_auv_status_job,
+        )
+
+        init_sync_sender(BASE_STATION_URL, BASE_STATION_SYNC_TOKEN)
+
+        scheduler.add_job(
+            sync_telemetry_job,
+            trigger=IntervalTrigger(seconds=SYNC_INTERVAL_SECONDS),
+            id="sync_telemetry",
+            name="SPPI-45 Sync Telemetry → Base Station",
+            replace_existing=True,
+            misfire_grace_time=15,
+        )
+
+        scheduler.add_job(
+            sync_detections_job,
+            trigger=IntervalTrigger(seconds=SYNC_INTERVAL_SECONDS),
+            id="sync_detections",
+            name="SPPI-46 Sync Detections → Base Station",
+            replace_existing=True,
+            misfire_grace_time=15,
+        )
+
+        scheduler.add_job(
+            sync_auv_status_job,
+            trigger=IntervalTrigger(seconds=SYNC_INTERVAL_SECONDS),
+            id="sync_auv_status",
+            name="SPPI-47 Sync AUV Status → Base Station",
+            replace_existing=True,
+            misfire_grace_time=15,
+        )
+
+        logger.info(f"  - sync_telemetry_job  : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-45)")
+        logger.info(f"  - sync_detections_job : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-46)")
+        logger.info(f"  - sync_auv_status_job : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-47)")
+    else:
+        logger.info("  - Sync jobs DINONAKTIFKAN (BASE_STATION_URL tidak diisi di .env)")

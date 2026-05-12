@@ -1,5 +1,8 @@
 import os
 import uuid
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ==========================
 # Streaming / Encoder Settings
@@ -46,28 +49,12 @@ YOLO_MAX_DETECTIONS = int(os.getenv("YOLO_MAX_DETECTIONS", "30"))
 # ==========================
 streaming_session_id = str(uuid.uuid4())
 
-"""
-Tambahan konfigurasi di config.py yang sudah ada.
-
-Tambahkan baris-baris ini ke file config.py yang sudah ada
-di src/backend/config.py — JANGAN timpa file aslinya,
-cukup tambahkan bagian DATABASE_URL di bawah.
-"""
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
 # ==========================
-# TAMBAHAN BARU — Database
+# Database
 # ==========================
-
-# Format dari .env: DATABASE_URL="mysql://user:pass@host:3306/dbname"
-# Prisma pakai format mysql://, SQLAlchemy butuh mysql+pymysql://
 _raw_db_url = os.getenv("DATABASE_URL", "")
 
 if _raw_db_url.startswith("mysql://"):
-    # Konversi otomatis dari format Prisma ke SQLAlchemy
     DATABASE_URL = _raw_db_url.replace("mysql://", "mysql+pymysql://", 1)
 elif _raw_db_url.startswith("mysql+pymysql://"):
     DATABASE_URL = _raw_db_url
@@ -78,7 +65,7 @@ else:
     )
 
 # ==========================
-# TAMBAHAN BARU — JWT
+# JWT
 # ==========================
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", os.getenv("NEXTAUTH_SECRET", ""))
 JWT_ALGORITHM = "HS256"
@@ -89,3 +76,19 @@ if not JWT_SECRET_KEY:
         "JWT_SECRET_KEY tidak ditemukan di .env. "
         "Tambahkan: JWT_SECRET_KEY=your-secret-key"
     )
+
+# ==========================
+# Sync ROV → Base Station (SPPI 45-47)
+# ==========================
+# URL Base Station tempat ROV mengirim data sinkronisasi.
+# Kosongkan jika unit ini adalah ROV tanpa target Base Station,
+# atau jika unit ini adalah Base Station (receiver).
+# Contoh: BASE_STATION_URL=http://192.168.1.10:8000
+BASE_STATION_URL = os.getenv("BASE_STATION_URL", "")
+
+# Token JWT operator yang digunakan ROV untuk autentikasi ke Base Station.
+# Generate dengan login ke Base Station lalu copy access_token-nya.
+BASE_STATION_SYNC_TOKEN = os.getenv("BASE_STATION_SYNC_TOKEN", "")
+
+# Interval pengiriman data sync dalam detik (default 10 detik).
+SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", "10"))
