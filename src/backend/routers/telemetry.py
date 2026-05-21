@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from database.models import Telemetry
+from database.models import Telemetry, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 
@@ -107,10 +107,15 @@ def save_telemetry(
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id wajib diisi")
 
-    ph_level         = body.get("ph_level") or body.get("phLevel")
-    tds_value        = body.get("tds_value") or body.get("tdsValue")
-    dissolved_oxygen = body.get("dissolved_oxygen") or body.get("dissolvedOxygen")
-    water_temp       = body.get("water_temp") or body.get("waterTemp")
+    session = db.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session tidak ditemukan")
+
+    _get = lambda *keys: next((body[k] for k in keys if body.get(k) is not None), None)
+    ph_level         = _get("ph_level", "phLevel")
+    tds_value        = _get("tds_value", "tdsValue")
+    dissolved_oxygen = _get("dissolved_oxygen", "dissolvedOxygen")
+    water_temp       = _get("water_temp", "waterTemp")
 
     if any(v is None for v in [ph_level, tds_value, dissolved_oxygen, water_temp]):
         raise HTTPException(
@@ -123,7 +128,7 @@ def save_telemetry(
         id=generate_cuid(),
         session_id=session_id,
         timestamp=now,
-        depth=float(body.get("depth") or body.get("depth") or 0.0),
+        depth=float(body.get("depth") or 0.0),
         ph_level=float(ph_level),
         tds_value=float(tds_value),
         dissolved_oxygen=float(dissolved_oxygen),

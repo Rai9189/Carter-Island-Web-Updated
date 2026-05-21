@@ -52,8 +52,23 @@ async def save_detection_to_db(
     if not detections:
         return False
 
-    # Pakai session_id dari parameter, fallback ke streaming_session_id
-    active_session_id = session_id or streaming_session_id
+    # Pakai session_id dari parameter; jika tidak ada, ambil session aktif dari DB
+    if session_id:
+        active_session_id = session_id
+    else:
+        try:
+            from database.connection import SessionLocal
+            from database.models import MonitoringSession, SessionStatus
+            _db = SessionLocal()
+            try:
+                _s = _db.query(MonitoringSession).filter(
+                    MonitoringSession.status == SessionStatus.RUNNING
+                ).order_by(MonitoringSession.start_time.desc()).first()
+                active_session_id = _s.id if _s else streaming_session_id
+            finally:
+                _db.close()
+        except Exception:
+            active_session_id = streaming_session_id
 
     db = SessionLocal()
     try:

@@ -1,12 +1,9 @@
 'use client'
 
+import { useState } from 'react'
 import Header from '@/components/layout/Header'
 import UserDialog from '@/components/users/UserDialog'
-import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Loader2, Plus } from 'lucide-react'
-import { useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { useAdminGuard } from '@/hooks/useAdminGuard'
 import { useUsersPagination, type User } from '@/hooks/useUsersPagination'
 import { FiltersBar } from './FiltersBar'
@@ -15,22 +12,26 @@ import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
 
 export default function UsersPage() {
-  /**
-   * PERUBAHAN:
-   * useAdminGuard sekarang pakai authHelper bukan useSession NextAuth.
-   * Interface session sama: session.user.role, session.user.id, dst.
-   */
   const { session, status } = useAdminGuard()
   const {
-    users, isLoading, error, hasMore, loadMore, removeFromList,
+    users, isLoading, error, hasMore, loadMore, removeFromList, resetAndLoad,
     limit, setLimit, role, setRole, search, setSearch, sort, setSort
   } = useUsersPagination({ enabled: status === 'authenticated' && session?.user.role === 'ADMIN' })
 
-  const [dialogState, setDialogState] = useState<{ isOpen: boolean; mode: 'create' | 'edit' | 'view'; user: User | null }>({ isOpen: false, mode: 'create', user: null })
-  const [deleteDialog, setDeleteDialog] = useState<{ isOpen: boolean; user: User | null; isDeleting: boolean }>({ isOpen: false, user: null, isDeleting: false })
+  const [dialogState, setDialogState] = useState<{
+    isOpen: boolean; mode: 'create' | 'edit' | 'view'; user: User | null
+  }>({ isOpen: false, mode: 'create', user: null })
+
+  const [deleteDialog, setDeleteDialog] = useState<{
+    isOpen: boolean; user: User | null; isDeleting: boolean
+  }>({ isOpen: false, user: null, isDeleting: false })
 
   if (status === 'loading' || !session) {
-    return <div className="flex items-center justify-center min-h-screen"><Loader2 className="h-8 w-8 animate-spin" /></div>
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+      </div>
+    )
   }
   if (session.user.role !== 'ADMIN') return null
 
@@ -44,82 +45,125 @@ export default function UsersPage() {
     if (!u) return
     try {
       setDeleteDialog(p => ({ ...p, isDeleting: true }))
-      /**
-       * PERUBAHAN:
-       * Sebelum: fetch(`/api/users/${u.id}`, { method: 'DELETE' })
-       * Sesudah: apiClient.delete(`/api/users/${u.id}`) → FastAPI
-       */
       const data = await apiClient.delete<{ message: string }>(`/api/users/${u.id}`)
       removeFromList(u.id)
-      toast.success(data?.message || 'User deleted successfully')
+      toast.success(data?.message || 'Pengguna berhasil dihapus')
       setDeleteDialog({ isOpen: false, user: null, isDeleting: false })
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to delete user')
+      toast.error(e instanceof Error ? e.message : 'Gagal menghapus pengguna')
       setDeleteDialog(p => ({ ...p, isDeleting: false }))
     }
   }
 
   return (
     <>
-      <Header title="User Management" subtitle="Manage System Users and Permissions" emoji="🔧">
-        <Button onClick={handleAddUser} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white">
-          <Plus className="h-4 w-4" /> Add New User
-        </Button>
-      </Header>
+      <Header title="User Management" subtitle="Manage System Users and Permissions" emoji="🔧" />
 
-      <main className="p-0 lg:px-4 mt-4">
-        <Card>
-          <CardContent className="px-4">
-            <FiltersBar limit={limit} setLimit={setLimit} role={role} setRole={setRole} search={search} setSearch={setSearch} sort={sort} setSort={setSort} loadedCount={users.length} hasMore={hasMore} />
+      <main className="px-6 py-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
 
-            {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md"><p className="text-sm text-red-600">{error}</p></div>}
+          <FiltersBar
+            limit={limit} setLimit={setLimit}
+            role={role} setRole={setRole}
+            search={search} setSearch={setSearch}
+            sort={sort} setSort={setSort}
+            loadedCount={users.length} hasMore={hasMore}
+            onAddUser={handleAddUser}
+          />
 
-            {isLoading && users.length === 0 ? (
-              <div className="flex items-center justify-center py-8"><Loader2 className="h-8 w-8 animate-spin" /><span className="ml-2">Loading users...</span></div>
-            ) : users.length === 0 ? (
-              <div className="text-center py-12"><p className="text-gray-500 mb-4">No users found</p></div>
-            ) : (
-              <>
-                <UsersTable users={users} currentUserId={session.user.id} onView={handleViewUser} onEdit={handleEditUser} onDelete={handleDeleteUser} />
-                <div className="mt-4 flex items-center justify-end">
-                  {hasMore ? (
-                    <Button onClick={loadMore} disabled={isLoading} variant="outline" className="flex items-center gap-2">
-                      {isLoading ? (<><Loader2 className="h-4 w-4 animate-spin" /> Loading...</>) : 'Load More'}
-                    </Button>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">All users loaded</div>
-                  )}
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
+          {isLoading && users.length === 0 ? (
+            <div className="flex items-center justify-center py-16 text-gray-400">
+              <Loader2 className="h-6 w-6 animate-spin mr-2" />
+              <span className="text-sm">Memuat data pengguna...</span>
+            </div>
+          ) : users.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-gray-300">
+              <div className="w-16 h-16 rounded-full border-4 border-dashed border-gray-200 flex items-center justify-center mb-3">
+                <span className="text-2xl">👤</span>
+              </div>
+              <p className="text-sm text-gray-400">Tidak ada pengguna ditemukan</p>
+            </div>
+          ) : (
+            <>
+              <UsersTable
+                users={users}
+                currentUserId={session.user.id}
+                onView={handleViewUser}
+                onEdit={handleEditUser}
+                onDelete={handleDeleteUser}
+              />
+
+              {/* Load more */}
+              {hasMore && (
+                <div className="flex justify-center mt-4">
+                  <button
+                    onClick={loadMore}
+                    disabled={isLoading}
+                    className="px-6 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Muat Lebih Banyak'}
+                  </button>
                 </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
+              )}
+            </>
+          )}
+        </div>
       </main>
 
+      {/* User Dialog */}
       <UserDialog
         isOpen={dialogState.isOpen}
         onClose={() => setDialogState(s => ({ ...s, isOpen: false }))}
-        onSuccess={() => location.reload()}
+        onSuccess={() => resetAndLoad()}
         user={dialogState.user}
         mode={dialogState.mode}
       />
 
-      <Dialog open={deleteDialog.isOpen} onOpenChange={() => setDeleteDialog({ isOpen: false, user: null, isDeleting: false })}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete User</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete <strong>{deleteDialog.user?.fullName}</strong>? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setDeleteDialog({ isOpen: false, user: null, isDeleting: false })} disabled={deleteDialog.isDeleting}>Cancel</Button>
-            <Button variant="destructive" onClick={confirmDelete} disabled={deleteDialog.isDeleting}>
-              {deleteDialog.isDeleting ? (<><Loader2 className="h-4 w-4 animate-spin mr-2" /> Deleting...</>) : 'Delete User'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Delete Confirm Dialog */}
+      {deleteDialog.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div className="bg-red-600 px-6 py-4">
+              <h2 className="text-base font-semibold text-white">Hapus Pengguna</h2>
+            </div>
+            <div className="px-6 py-5">
+              <p className="text-sm text-gray-600 mb-4">
+                Apakah Anda yakin ingin menghapus pengguna ini? Tindakan ini tidak dapat dibatalkan.
+              </p>
+              {deleteDialog.user && (
+                <div className="p-3 bg-gray-50 rounded-xl mb-4">
+                  <p className="font-medium text-gray-800 text-sm">{deleteDialog.user.fullName}</p>
+                  <p className="text-xs text-gray-500">{deleteDialog.user.email}</p>
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteDialog({ isOpen: false, user: null, isDeleting: false })}
+                  disabled={deleteDialog.isDeleting}
+                  className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                >
+                  Batal
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  disabled={deleteDialog.isDeleting}
+                  className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                >
+                  {deleteDialog.isDeleting ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Menghapus...</>
+                  ) : 'Hapus Pengguna'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

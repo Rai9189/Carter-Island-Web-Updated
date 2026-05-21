@@ -138,7 +138,9 @@ class RtspDetectionTrack(VideoStreamTrack):
         logger.info("Video writer thread started")
         frames_written = 0
 
-        while not self.stop_writer_thread:
+        while not self.stop_writer_thread or (
+            self.frame_queue is not None and not self.frame_queue.empty()
+        ):
             try:
                 if self.frame_queue is not None:
                     frame = self.frame_queue.get(timeout=0.5)

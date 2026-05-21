@@ -1,62 +1,71 @@
-// src/app/dashboard/users/FiltersBar.tsx
 'use client'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Search as SearchIcon } from 'lucide-react'
 
 export function FiltersBar(props: {
   limit: number; setLimit: (n: number) => void
   role: string; setRole: (v: string) => void
   search: string; setSearch: (v: string) => void
-  sort: 'asc'|'desc'; setSort: (v: 'asc'|'desc') => void
+  sort: 'asc' | 'desc'; setSort: (v: 'asc' | 'desc') => void
   loadedCount: number; hasMore: boolean
+  onAddUser: () => void
 }) {
-  const { limit, setLimit, role, setRole, search, setSearch, sort, setSort, loadedCount, hasMore } = props
+  const { role, setRole, search, setSearch, sort, setSort, loadedCount, hasMore, onAddUser } = props
+
   return (
-    <>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-        <div className="text-sm text-muted-foreground">
-          Loaded <span className="font-medium">{loadedCount}</span> users{hasMore ? ' (more available)' : ' — end of list'}
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm">Rows per page</span>
-          <Select value={String(limit)} onValueChange={v => setLimit(parseInt(v,10))}>
-            <SelectTrigger className="h-8 w-[88px]"><SelectValue placeholder={limit} /></SelectTrigger>
-            <SelectContent>
-              {[5,10,20,30,50].map(sz => <SelectItem key={sz} value={String(sz)}>{sz}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
+    <div className="flex flex-wrap items-center gap-3 mb-5">
+      {/* Search */}
+      <div className="relative flex-1 min-w-48">
+        <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Cari nama atau email..."
+          className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400 bg-white transition-colors"
+        />
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3 mb-4">
-        <div className="relative flex-1 max-w-sm">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search by name or email..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-10 pr-4 py-2 w-full rounded-md border border-gray-300 bg-white focus:outline-none focus:ring-0 focus:border-blue-600 transition"
-          />
-        </div>
-
-        <Select value={role || 'all'} onValueChange={v => setRole(v === 'all' ? '' : v)}>
-          <SelectTrigger className="h-12w-[150px]"><SelectValue placeholder="All Roles" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Roles</SelectItem>
-            <SelectItem value="USER">User</SelectItem>
-            <SelectItem value="ADMIN">Admin</SelectItem>
-          </SelectContent>
-        </Select>
-
-        <Select value={sort} onValueChange={v => setSort(v as 'asc'|'desc')}>
-          <SelectTrigger className="h-12w-[140px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="desc">Newest First</SelectItem>
-            <SelectItem value="asc">Oldest First</SelectItem>
-          </SelectContent>
-        </Select>
+      {/* Role filter */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-gray-500">Role:</span>
+        <select
+          value={role || 'all'}
+          onChange={e => setRole(e.target.value === 'all' ? '' : e.target.value)}
+          className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-blue-400 cursor-pointer"
+        >
+          <option value="all">Semua Role</option>
+          <option value="ADMIN">Admin</option>
+          <option value="USER">User</option>
+        </select>
       </div>
-    </>
+
+      {/* Sort */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-gray-500">Urutkan:</span>
+        <select
+          value={sort}
+          onChange={e => setSort(e.target.value as 'asc' | 'desc')}
+          className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-blue-400 cursor-pointer"
+        >
+          <option value="desc">Terbaru</option>
+          <option value="asc">Terlama</option>
+        </select>
+      </div>
+
+      {/* Count */}
+      <span className="text-sm text-gray-400 ml-auto">
+        {loadedCount} pengguna ditemukan{hasMore ? ' (ada lebih)' : ''}
+      </span>
+
+      {/* Add button */}
+      <button
+        onClick={onAddUser}
+        className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+      >
+        <span className="text-base leading-none">+</span>
+        Add New User
+      </button>
+    </div>
   )
 }

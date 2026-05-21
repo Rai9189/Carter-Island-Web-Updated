@@ -17,7 +17,7 @@ Perubahan dari versi lama:
     - session_id sekarang FK ke monitoring_sessions
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from database.connection import SessionLocal
@@ -56,7 +56,7 @@ async def save_recording_to_db(
     db = SessionLocal()
     try:
         video_path_id = generate_cuid()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Deteksi format dari ekstensi file
         fmt = "webm" if filename.endswith(".webm") else "mp4"

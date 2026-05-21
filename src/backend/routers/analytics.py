@@ -135,10 +135,10 @@ def get_telemetry_analytics(
     latest = telemetry[-1] if telemetry else None
     count = len(telemetry)
 
-    avg_ph  = sum(t.ph_level for t in telemetry) / count if count else 0
-    avg_tds = sum(t.tds_value for t in telemetry) / count if count else 0
-    avg_do  = sum(t.dissolved_oxygen for t in telemetry) / count if count else 0
-    avg_temp = sum(t.water_temp for t in telemetry) / count if count else 0
+    avg_ph  = sum(t.ph_level or 0 for t in telemetry) / count if count else 0
+    avg_tds = sum(t.tds_value or 0 for t in telemetry) / count if count else 0
+    avg_do  = sum(t.dissolved_oxygen or 0 for t in telemetry) / count if count else 0
+    avg_temp = sum(t.water_temp or 0 for t in telemetry) / count if count else 0
 
     return {
         "success": True,
@@ -149,26 +149,26 @@ def get_telemetry_analytics(
                 "avgDo": round(avg_do, 2),
                 "avgTemp": round(avg_temp, 2),
                 "dataPoints": count,
-                "latestDepth": round(latest.depth, 2) if latest else 0,
+                "latestDepth": round(latest.depth, 2) if latest and latest.depth is not None else 0,
             },
             "ph": [
-                {"time": t.timestamp.isoformat(), "value": round(t.ph_level, 2)}
+                {"time": t.timestamp.isoformat(), "value": round(t.ph_level or 0, 2)}
                 for t in telemetry
             ],
             "tds": [
-                {"time": t.timestamp.isoformat(), "value": round(t.tds_value, 2)}
+                {"time": t.timestamp.isoformat(), "value": round(t.tds_value or 0, 2)}
                 for t in telemetry
             ],
             "dissolvedOxygen": [
-                {"time": t.timestamp.isoformat(), "value": round(t.dissolved_oxygen, 2)}
+                {"time": t.timestamp.isoformat(), "value": round(t.dissolved_oxygen or 0, 2)}
                 for t in telemetry
             ],
             "temperature": [
-                {"time": t.timestamp.isoformat(), "value": round(t.water_temp, 2)}
+                {"time": t.timestamp.isoformat(), "value": round(t.water_temp or 0, 2)}
                 for t in telemetry
             ],
             "depth": [
-                {"time": t.timestamp.isoformat(), "value": round(t.depth, 2)}
+                {"time": t.timestamp.isoformat(), "value": round(t.depth or 0, 2)}
                 for t in telemetry
             ],
         },
@@ -206,25 +206,25 @@ def get_auv_status_analytics(
         "data": {
             "summary": {
                 "dataPoints": count,
-                "latestDepth": round(latest.depth, 2) if latest else 0,
-                "latestHeading": latest.heading if latest else "N",
-                "latestSpeed": round(latest.speed, 2) if latest else 0,
+                "latestDepth": round(latest.depth, 2) if latest and latest.depth is not None else 0,
+                "latestHeading": latest.heading if latest and latest.heading is not None else "N",
+                "latestSpeed": round(latest.speed, 2) if latest and latest.speed is not None else 0,
             },
             "attitude": [
                 {
                     "time": s.timestamp.isoformat(),
-                    "roll": round(s.roll, 2),
-                    "pitch": round(s.pitch, 2),
-                    "yaw": round(s.yaw, 2),
+                    "roll": round(s.roll or 0, 2),
+                    "pitch": round(s.pitch or 0, 2),
+                    "yaw": round(s.yaw or 0, 2),
                 }
                 for s in status_data
             ],
             "navigation": [
                 {
                     "time": s.timestamp.isoformat(),
-                    "depth": round(s.depth, 2),
-                    "speed": round(s.speed, 2),
-                    "heading": s.heading,
+                    "depth": round(s.depth or 0, 2),
+                    "speed": round(s.speed or 0, 2),
+                    "heading": s.heading or "N",
                 }
                 for s in status_data
             ],
@@ -335,6 +335,6 @@ def _format_session(s: MonitoringSession) -> dict:
         "locationName": s.location_name,
         "startTime": s.start_time.isoformat(),
         "endTime": s.end_time.isoformat() if s.end_time else None,
-        "status": s.status,
+        "status": s.status.value,
         "createdAt": s.created_at.isoformat(),
     }

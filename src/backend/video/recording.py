@@ -55,6 +55,22 @@ async def start_recording(client_id: str, detection_track) -> Optional[str]:
         logger.warning(f"Client {client_id} is already recording")
         return None
 
+    # Ambil session aktif dari DB; fallback ke streaming_session_id jika tidak ada
+    try:
+        from database.connection import SessionLocal
+        from database.models import MonitoringSession, SessionStatus
+        _db = SessionLocal()
+        try:
+            _s = _db.query(MonitoringSession).filter(
+                MonitoringSession.status == SessionStatus.RUNNING
+            ).order_by(MonitoringSession.start_time.desc()).first()
+            actual_session_id = _s.id if _s else streaming_session_id
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.warning(f"Could not get active session from DB: {_e}")
+        actual_session_id = streaming_session_id
+
     try:
         from video.detection_track import get_fps
 
@@ -99,7 +115,7 @@ async def start_recording(client_id: str, detection_track) -> Optional[str]:
             "filepath": filepath,
             "writer": writer,
             "start_time": datetime.now(JAKARTA_TZ),
-            "session_id": streaming_session_id
+            "session_id": actual_session_id
         }
 
         logger.info(f"Started recording for client {client_id}: {filename}")
@@ -119,9 +135,11 @@ async def stop_recording(client_id: str) -> Optional[dict]:
         recording_info = active_recordings.pop(client_id)
         filepath = recording_info["filepath"]
 
-        # Hitung ukuran dan durasi
-        file_size = os.path.getsize(filepath)
+        # Release writer dulu agar semua frame ter-flush ke disk sebelum baca ukuran file
+        recording_info["writer"].release()
+
         end_time = datetime.now(JAKARTA_TZ)
+        file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
         duration = (end_time - recording_info["start_time"]).total_seconds()
 
         recording_data = {

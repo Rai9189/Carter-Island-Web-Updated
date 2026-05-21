@@ -269,6 +269,10 @@ def update_session(
     session.end_time   = now
     session.updated_at = now
 
+    location_name = body.get("locationName", "").strip()
+    if location_name:
+        session.location_name = location_name
+
     db.commit()
     db.refresh(session)
 

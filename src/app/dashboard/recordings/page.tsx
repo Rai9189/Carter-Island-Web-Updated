@@ -1,21 +1,12 @@
 import { requireAuth } from '@/lib/auth-utils'
 import { cookies } from 'next/headers'
 import Header from '@/components/layout/Header'
-import { Card, CardContent } from '@/components/ui/card'
 import RecordingsTable from '@/components/RecordingsTable'
 
-/**
- * PERUBAHAN:
- * Sebelum: import { prisma } from '@/lib/prisma'
- *          const recordings = await prisma.recording.findMany(...)
- *
- * Sesudah: fetch ke FastAPI /api/recordings dengan JWT token dari cookie
- *          Tidak ada lagi akses Prisma dari Next.js
- */
 async function getRecordings(token: string) {
   try {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-    const res = await fetch(`${apiUrl}/api/recordings?limit=50`, {
+    const res = await fetch(`${apiUrl}/api/recordings?limit=100`, {
       headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
     })
@@ -29,7 +20,6 @@ async function getRecordings(token: string) {
 
 export default async function RecordingsPage() {
   await requireAuth()
-
   const cookieStore = await cookies()
   const token = cookieStore.get('access_token')?.value || ''
   const recordings = await getRecordings(token)
@@ -37,12 +27,10 @@ export default async function RecordingsPage() {
   return (
     <>
       <Header title="Recordings" subtitle="Manage AUV Video Recordings" emoji="📹" />
-      <main className="p-0 lg:px-4 mt-4">
-        <Card>
-          <CardContent className="p-6">
-            <RecordingsTable recordings={recordings} />
-          </CardContent>
-        </Card>
+      <main className="px-6 py-4">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+          <RecordingsTable recordings={recordings} />
+        </div>
       </main>
     </>
   )

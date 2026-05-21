@@ -202,6 +202,9 @@ def update_user(
             detail="fullName, email, dan phoneNumber wajib diisi"
         )
 
+    if role not in ("USER", "ADMIN"):
+        raise HTTPException(status_code=400, detail="Role harus USER atau ADMIN")
+
     # Cek email tidak dipakai user lain
     if email != user.email:
         existing = db.query(User).filter(User.email == email).first()

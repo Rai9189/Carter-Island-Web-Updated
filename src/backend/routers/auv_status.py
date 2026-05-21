@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from database.models import AUVStatus
+from database.models import AUVStatus, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 
@@ -111,6 +111,10 @@ def save_auv_status(
     session_id = body.get("session_id") or body.get("sessionId")
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id wajib diisi")
+
+    session = db.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session tidak ditemukan")
 
     now = datetime.now(timezone.utc)
 

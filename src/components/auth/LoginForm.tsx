@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { LoginData } from '@/types/auth'
 import { Anchor } from 'lucide-react'
@@ -15,11 +15,10 @@ export default function LoginForm() {
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(false)
   const [exiting, setExiting] = useState(false)
+  const navigatedRef = useRef(false)
 
-  const heroImageUrl = useMemo(
-    () => 'https://firebasestorage.googleapis.com/v0/b/seputipy.appspot.com/o/covers%2FROBLOKS.png?alt=media',
-    []
-  )
+  const heroImageUrl = useMemo(() => '/hero.jpg', [])
+
   const [ready, setReady] = useState(false)
   const [skeletonGone, setSkeletonGone] = useState(false)
 
@@ -69,7 +68,7 @@ export default function LoginForm() {
   return (
     <div
       className={`min-h-screen w-full bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center px-4 py-8 transition-opacity duration-500 ${exiting ? 'opacity-0' : 'opacity-100'}`}
-      onTransitionEnd={() => { if (exiting) router.push('/dashboard') }}
+      onTransitionEnd={() => { if (exiting && !navigatedRef.current) { navigatedRef.current = true; router.push('/dashboard') } }}
     >
       <div className="relative w-full max-w-4xl rounded-2xl shadow-2xl bg-white md:h-[560px] overflow-hidden">
         {!skeletonGone && (

@@ -15,7 +15,7 @@ Perubahan dari versi lama:
 import logging
 from typing import Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -91,14 +91,17 @@ def get_detection_stats(
     if session_id:
         query = query.filter(Detection.session_id == session_id)
 
-    if start_date:
-        query = query.filter(
-            Detection.detected_at >= datetime.fromisoformat(start_date)
-        )
-    if end_date:
-        query = query.filter(
-            Detection.detected_at <= datetime.fromisoformat(end_date)
-        )
+    try:
+        if start_date:
+            query = query.filter(
+                Detection.detected_at >= datetime.fromisoformat(start_date)
+            )
+        if end_date:
+            query = query.filter(
+                Detection.detected_at <= datetime.fromisoformat(end_date)
+            )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan ISO 8601 (YYYY-MM-DD)")
 
     total_detections = query.count()
 

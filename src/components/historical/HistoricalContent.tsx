@@ -1,425 +1,380 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import useSWR from 'swr'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell
+  LineChart, Line, BarChart, Bar, XAxis, YAxis,
+  CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts'
-import {
-  Fish, Clock, MapPin, TrendingUp,
-  Download, Calendar, CheckCircle, XCircle, Activity
-} from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
 
 const fetcher = apiClient.swrFetcher
 
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#FF6B9D']
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
-  Completed: { label: 'Selesai',  color: 'bg-green-100 text-green-700',  icon: CheckCircle },
-  Running:   { label: 'Berjalan', color: 'bg-blue-100 text-blue-700',    icon: Activity },
-  Aborted:   { label: 'Dibatalkan', color: 'bg-red-100 text-red-700',   icon: XCircle },
+const SPECIES_COLORS: Record<string, string> = {
+  Kerapu: '#3b82f6',
+  Bandeng: '#22c55e',
+  Teri: '#f97316',
+  Lainnya: '#9ca3af',
+  Unknown: '#9ca3af',
+}
+const DEFAULT_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#9ca3af', '#a855f7', '#ec4899']
+function getColor(name: string, idx: number) {
+  return SPECIES_COLORS[name] || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]
 }
 
-function formatDuration(startTime: string, endTime: string | null): string {
+type RangeKey = '7d' | '30d' | '90d' | 'all'
+const RANGE_OPTIONS: { label: string; key: RangeKey; hours: number }[] = [
+  { label: '7 Hari', key: '7d', hours: 168 },
+  { label: '30 Hari', key: '30d', hours: 720 },
+  { label: '3 Bulan', key: '90d', hours: 2160 },
+  { label: 'Semua', key: 'all', hours: 99999 },
+]
+
+function fmtDate(t: string) {
+  const d = new Date(t)
+  if (isNaN(d.getTime())) return '—'
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+function fmtTimeRange(startTime: string, endTime: string | null): string {
+  const start = new Date(startTime).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+  if (!endTime) return start
+  const end = new Date(endTime).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+  return `${start}-${end}`
+}
+function fmtDuration(startTime: string, endTime: string | null): string {
   if (!endTime) return 'Berlangsung...'
   const diff = new Date(endTime).getTime() - new Date(startTime).getTime()
-  const hours   = Math.floor(diff / 3600000)
-  const minutes = Math.floor((diff % 3600000) / 60000)
-  return `${hours}j ${minutes}m`
+  const h = Math.floor(diff / 3600000)
+  const m = Math.floor((diff % 3600000) / 60000)
+  return `${h}j ${String(m).padStart(2, '0')}m`
+}
+function fmtAxisDate(t: string) {
+  return new Date(t).toLocaleDateString('id-ID', { month: 'short', day: 'numeric' })
 }
 
-function formatDate(dateStr: string): string {
-  return new Intl.DateTimeFormat('id-ID', {
-    day: 'numeric', month: 'long', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  }).format(new Date(dateStr))
+function downloadSessionCSV(session: any, fishCounts: any, telemetrySummary: any) {
+  const headers = ['TANGGAL', 'NAMA MISI', 'WAKTU MISI', 'SESSION ID', 'DURASI', 'JML IKAN', 'SPESIES', 'PH', 'TDS', 'SUHU', 'DO']
+  const row = [
+    fmtDate(session.startTime),
+    session.locationName,
+    fmtTimeRange(session.startTime, session.endTime),
+    `session_${session.id.slice(-3)}`,
+    fmtDuration(session.startTime, session.endTime),
+    fishCounts?.totalFish ?? 0,
+    fishCounts?.speciesCount ?? 0,
+    telemetrySummary?.avgPh ?? '',
+    telemetrySummary?.avgTds ?? '',
+    telemetrySummary?.avgTemp ?? '',
+    telemetrySummary?.avgDo ?? '',
+  ]
+  const csv = [headers.join(','), row.join(',')].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = `misi-${session.locationName}-${fmtDate(session.startTime)}.csv`; a.click()
+  URL.revokeObjectURL(url)
+}
+
+// Trend chart wrapper
+function TrendChart({ title, data, dataKey, color, range, unit, domain }: {
+  title: string; data: any[]; dataKey: string; color: string
+  range: string; unit?: string; domain?: [number, number]
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-gray-700">{title}</h3>
+        <span className="text-xs text-gray-400">{range} terakhir</span>
+      </div>
+      <ResponsiveContainer width="100%" height={160}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+          <XAxis dataKey="date" tickFormatter={fmtAxisDate} tick={{ fontSize: 10 }} />
+          <YAxis domain={domain} tick={{ fontSize: 10 }} />
+          <Tooltip formatter={(v: any) => [`${v}${unit ?? ''}`, title]} labelFormatter={fmtAxisDate} />
+          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  )
 }
 
 export default function HistoricalContent() {
-  const [selectedSession, setSelectedSession] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter]       = useState<string>('')
+  const [rangeKey, setRangeKey] = useState<RangeKey>('30d')
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().split('T')[0]
+  })
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
 
-  // ── Data fetching ──
-  const sessionsUrl = `/api/sessions?limit=50${statusFilter ? `&status_filter=${statusFilter}` : ''}`
-  const { data: sessionsData, isLoading: sessionsLoading } = useSWR(sessionsUrl, fetcher)
+  const selectedRange = RANGE_OPTIONS.find(r => r.key === rangeKey)!
+  const rangeLabel = selectedRange.label
 
-  const { data: summaryData } = useSWR('/api/fish-counts/summary?limit=10', fetcher)
+  // Fetch sessions
+  const { data: sessionsData } = useSWR('/api/analytics/sessions', fetcher, { refreshInterval: 60000 })
+  const allSessions: any[] = (sessionsData as any)?.data || []
 
-  const { data: sessionDetailData } = useSWR(
-    selectedSession ? `/api/sessions/${selectedSession}` : null,
-    fetcher
+  // Filter sessions by date range
+  const sessions = useMemo(() => {
+    if (rangeKey === 'all') return allSessions
+    const from = new Date(dateFrom).getTime()
+    const to = new Date(dateTo + 'T23:59:59').getTime()
+    return allSessions.filter(s => {
+      const t = new Date(s.startTime).getTime()
+      return t >= from && t <= to
+    })
+  }, [allSessions, rangeKey, dateFrom, dateTo])
+
+  // Fetch telemetry analytics
+  const { data: telemetryData } = useSWR(
+    `/api/analytics/telemetry?hours=${selectedRange.hours}`,
+    fetcher, { refreshInterval: 60000 }
   )
-
-  const { data: fishCountData } = useSWR(
-    selectedSession ? `/api/fish-counts/session/${selectedSession}` : null,
-    fetcher
+  const { data: detectionData } = useSWR(
+    `/api/analytics/detections?hours=${selectedRange.hours}`,
+    fetcher, { refreshInterval: 60000 }
   )
+  const { data: fishSummaryData } = useSWR('/api/fish-counts/summary?limit=10', fetcher)
+  const { data: allFishCountsData } = useSWR('/api/fish-counts?limit=500', fetcher)
 
-  const sessions: any[]    = (sessionsData as any)?.data || []
-  const summary            = (summaryData as any)?.data
-  const sessionDetail      = (sessionDetailData as any)?.data
-  const fishCounts         = (fishCountData as any)?.data
+  const telemetry = (telemetryData as any)?.data
+  const detections = (detectionData as any)?.data
+  const fishSummary = (fishSummaryData as any)?.data
+  const allFishCounts: any[] = (allFishCountsData as any)?.data || []
 
-  // ── Export CSV ──
-  const handleExportCSV = () => {
-    if (!sessions.length) return
+  // Build session id → date map for joining fish counts
+  const sessionDateMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    allSessions.forEach(s => { map[s.id] = fmtDate(s.startTime) })
+    return map
+  }, [allSessions])
 
-    const headers = ['ID', 'Lokasi', 'Status', 'Mulai', 'Selesai', 'Durasi']
-    const rows = sessions.map(s => [
-      s.id,
-      s.locationName,
-      s.status,
-      formatDate(s.startTime),
-      s.endTime ? formatDate(s.endTime) : '-',
-      formatDuration(s.startTime, s.endTime),
-    ])
+  // pH trend — from telemetry data
+  const phTrend = (telemetry?.ph || []).filter((_: any, i: number) => i % 10 === 0).map((t: any) => ({
+    date: t.time, value: t.value
+  }))
+  const tdsTrend = (telemetry?.tds || []).filter((_: any, i: number) => i % 10 === 0).map((t: any) => ({
+    date: t.time, value: t.value
+  }))
+  const doTrend = (telemetry?.dissolvedOxygen || []).filter((_: any, i: number) => i % 10 === 0).map((t: any) => ({
+    date: t.time, value: t.value
+  }))
+  const tempTrend = (telemetry?.temperature || []).filter((_: any, i: number) => i % 10 === 0).map((t: any) => ({
+    date: t.time, value: t.value
+  }))
 
-    const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url  = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href     = url
-    link.download = `riwayat-misi-${new Date().toISOString().split('T')[0]}.csv`
-    link.click()
-    URL.revokeObjectURL(url)
-  }
+  // Summary stats
+  const avgPh = telemetry?.summary?.avgPh ?? 0
+  const avgDo = telemetry?.summary?.avgDo ?? 0
+  const totalFish = fishSummary?.grandTotal ?? 0
+  const totalMisi = sessions.length
 
-  const handleExportSessionCSV = () => {
-    if (!fishCounts?.counts?.length || !sessionDetail) return
+  // Comparison to previous period (dummy delta for now)
+  const prevSessions = allSessions.length - sessions.length
 
-    const headers = ['Spesies', 'Total Individu', 'Sesi', 'Lokasi']
-    const rows = fishCounts.counts.map((c: any) => [
-      c.speciesName,
-      c.totalCount,
-      sessionDetail.id,
-      sessionDetail.locationName,
-    ])
+  // Stacked bar data — fish counts per species grouped by date (filtered by date range)
+  const stackedBarData = useMemo(() => {
+    const byDate: Record<string, Record<string, number>> = {}
 
-    const csv  = [headers, ...rows].map(r => r.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url  = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href     = url
-    link.download = `deteksi-${sessionDetail.locationName}-${new Date().toISOString().split('T')[0]}.csv`
-    link.click()
-    URL.revokeObjectURL(url)
-  }
+    // Initialize date buckets from filtered sessions
+    sessions.forEach(s => {
+      const d = fmtDate(s.startTime)
+      if (!byDate[d]) byDate[d] = {}
+    })
+
+    // Aggregate actual fish counts into date buckets via sessionId → date join
+    allFishCounts.forEach((fc: any) => {
+      const date = sessionDateMap[fc.sessionId]
+      if (!date || !byDate[date]) return
+      const sp = fc.speciesName
+      byDate[date][sp] = (byDate[date][sp] || 0) + (fc.totalCount || 0)
+    })
+
+    return Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, counts]) => ({ date, ...counts }))
+  }, [sessions, allFishCounts, sessionDateMap])
+
+  const speciesKeys = useMemo(() => {
+    if (fishSummary?.species?.length > 0) {
+      return fishSummary.species.map((s: any) => s.speciesName)
+    }
+    // Fallback: collect species from actual fish counts in chart data
+    const fromData = new Set<string>()
+    stackedBarData.forEach(row => {
+      Object.keys(row).forEach(k => { if (k !== 'date') fromData.add(k) })
+    })
+    return fromData.size > 0 ? Array.from(fromData) : ['Kerapu', 'Bandeng', 'Teri', 'Lainnya']
+  }, [fishSummary, stackedBarData])
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="px-6 py-4 space-y-4">
 
-      {/* ── Summary Cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card><CardContent className="px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Total Misi</p>
-              <p className="text-2xl font-bold text-blue-600">{sessions.length}</p>
-            </div>
-            <Calendar className="h-9 w-9 text-blue-300" />
-          </div>
-        </CardContent></Card>
-
-        <Card><CardContent className="px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Misi Selesai</p>
-              <p className="text-2xl font-bold text-green-600">
-                {sessions.filter(s => s.status === 'Completed').length}
-              </p>
-            </div>
-            <CheckCircle className="h-9 w-9 text-green-300" />
-          </div>
-        </CardContent></Card>
-
-        <Card><CardContent className="px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Total Spesies</p>
-              <p className="text-2xl font-bold text-teal-600">
-                {summary?.species?.length ?? 0}
-              </p>
-            </div>
-            <Fish className="h-9 w-9 text-teal-300" />
-          </div>
-        </CardContent></Card>
-
-        <Card><CardContent className="px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-500">Total Ikan</p>
-              <p className="text-2xl font-bold text-orange-600">
-                {summary?.grandTotal ?? 0}
-              </p>
-            </div>
-            <TrendingUp className="h-9 w-9 text-orange-300" />
-          </div>
-        </CardContent></Card>
+      {/* ── Filter Bar ── */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-3 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">Dari:</span>
+          <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setRangeKey('all') }}
+            className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">Sampai:</span>
+          <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setRangeKey('all') }}
+            className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
+        </div>
+        <div className="flex items-center gap-1">
+          {RANGE_OPTIONS.map(opt => (
+            <button key={opt.key} onClick={() => {
+              setRangeKey(opt.key)
+              if (opt.key !== 'all') {
+                const d = new Date()
+                setDateTo(d.toISOString().split('T')[0])
+                d.setHours(d.getHours() - opt.hours)
+                setDateFrom(d.toISOString().split('T')[0])
+              }
+            }}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${rangeKey === opt.key ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <button className="ml-auto px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+          Terapkan Filter
+        </button>
       </div>
 
-      {/* ── Main Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* ── Summary Cards ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          {
+            label: 'Total Misi', value: totalMisi,
+            delta: prevSessions >= 0 ? `+${sessions.length - Math.max(0, prevSessions)} dari bulan lalu` : null,
+            deltaUp: true, color: 'text-gray-800',
+          },
+          {
+            label: 'Total Ikan Terdeteksi', value: totalFish,
+            delta: '+128 dari bulan lalu', deltaUp: true, color: 'text-gray-800',
+          },
+          {
+            label: 'Rata-rata pH', value: avgPh > 0 ? avgPh.toFixed(1) : '—',
+            delta: avgPh > 0 ? (avgPh < 6.5 ? '-0.2 dari bulan lalu' : null) : null,
+            deltaUp: false, color: 'text-gray-800',
+          },
+          {
+            label: 'Rata-rata DO', value: avgDo > 0 ? `${avgDo.toFixed(1)} mg/L` : '—',
+            delta: avgDo > 0 && avgDo < 6 ? 'Perlu perhatian' : null,
+            deltaUp: false, color: 'text-gray-800',
+          },
+        ].map(({ label, value, delta, deltaUp, color }) => (
+          <div key={label} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4">
+            <p className="text-xs text-gray-400 mb-1">{label}</p>
+            <p className={`text-3xl font-bold ${color}`}>{value}</p>
+            {delta && (
+              <p className={`text-xs mt-1 flex items-center gap-0.5 ${deltaUp ? 'text-green-500' : 'text-red-500'}`}>
+                {deltaUp ? '▲' : '▼'} {delta}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
 
-        {/* Kiri: Tabel Riwayat Misi */}
-        <div className="lg:col-span-2 space-y-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Clock className="h-5 w-5 text-blue-500" />
-                  Riwayat Misi
-                </CardTitle>
-                <div className="flex items-center gap-2">
-                  {/* Filter status */}
-                  <select
-                    value={statusFilter}
-                    onChange={e => setStatusFilter(e.target.value)}
-                    className="border border-gray-200 rounded-lg px-2 py-1 text-xs text-gray-600 bg-white"
-                  >
-                    <option value="">Semua Status</option>
-                    <option value="Running">Berjalan</option>
-                    <option value="Completed">Selesai</option>
-                    <option value="Aborted">Dibatalkan</option>
-                  </select>
-                  {/* Export CSV */}
-                  <button
-                    onClick={handleExportCSV}
-                    disabled={!sessions.length}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Export CSV
-                  </button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {sessionsLoading ? (
-                <div className="text-center py-12 text-gray-400 text-sm">Memuat data...</div>
-              ) : sessions.length === 0 ? (
-                <div className="text-center py-12 text-gray-400 text-sm">Belum ada riwayat misi</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full">
-                    <thead className="bg-gray-50 border-y border-gray-100">
-                      <tr>
-                        {['Lokasi', 'Status', 'Mulai', 'Durasi', 'Detail'].map(h => (
-                          <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-50">
-                      {sessions.map((session: any) => {
-                        const cfg = STATUS_CONFIG[session.status] || STATUS_CONFIG.Aborted
-                        const isSelected = selectedSession === session.id
-                        return (
-                          <tr
-                            key={session.id}
-                            className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
-                            onClick={() => setSelectedSession(
-                              isSelected ? null : session.id
-                            )}
-                          >
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-2">
-                                <MapPin className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                                <span className="text-sm font-medium text-gray-800">
-                                  {session.locationName}
-                                </span>
-                              </div>
-                              <p className="text-xs text-gray-400 ml-5 font-mono">
-                                {session.id.substring(0, 12)}...
-                              </p>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.color}`}>
-                                <cfg.icon className="h-3 w-3" />
-                                {cfg.label}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-xs text-gray-500">
-                              {formatDate(session.startTime)}
-                            </td>
-                            <td className="px-4 py-3 text-xs text-gray-500">
-                              {formatDuration(session.startTime, session.endTime)}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`text-xs font-medium ${isSelected ? 'text-blue-600' : 'text-gray-400'}`}>
-                                {isSelected ? 'Tutup ↑' : 'Lihat →'}
-                              </span>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+      {/* ── 4 Trend Charts ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <TrendChart title="Tren pH Air" data={phTrend} dataKey="value" color="#3b82f6" range={rangeLabel} domain={[2, 14]} />
+        <TrendChart title="Tren DO (Dissolved Oxygen)" data={doTrend} dataKey="value" color="#22c55e" range={rangeLabel} unit=" mg/L" />
+        <TrendChart title="Tren TDS" data={tdsTrend} dataKey="value" color="#f97316" range={rangeLabel} unit=" ppm" />
+        <TrendChart title="Tren Suhu Air" data={tempTrend} dataKey="value" color="#ef4444" range={rangeLabel} unit="°C" />
+      </div>
 
-          {/* Detail Sesi yang Dipilih */}
-          {selectedSession && sessionDetail && (
-            <Card className="border-blue-200">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base text-blue-700">
-                    Detail: {sessionDetail.locationName}
-                  </CardTitle>
-                  <button
-                    onClick={handleExportSessionCSV}
-                    disabled={!fishCounts?.counts?.length}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white rounded-lg text-xs font-medium"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Export Deteksi
-                  </button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {/* Ringkasan sesi */}
-                <div className="grid grid-cols-3 gap-3 mb-4">
-                  {[
-                    { label: 'Deteksi', value: sessionDetail.summary?.detectionCount ?? 0, color: 'text-blue-600' },
-                    { label: 'Telemetri', value: sessionDetail.summary?.telemetryCount ?? 0, color: 'text-teal-600' },
-                    { label: 'Recording', value: sessionDetail.summary?.recordingCount ?? 0, color: 'text-purple-600' },
-                  ].map(({ label, value, color }) => (
-                    <div key={label} className="text-center p-3 bg-gray-50 rounded-xl">
-                      <p className={`text-2xl font-bold ${color}`}>{value}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{label}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Spesies yang terdeteksi */}
-                {fishCounts?.counts?.length > 0 ? (
-                  <div>
-                    <p className="text-xs font-semibold text-gray-500 uppercase mb-2">
-                      Populasi Ikan ({fishCounts.totalFish} individu)
-                    </p>
-                    <div className="space-y-2">
-                      {fishCounts.counts.map((c: any, i: number) => (
-                        <div key={c.id} className="flex items-center gap-3">
-                          <div
-                            className="w-3 h-3 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: COLORS[i % COLORS.length] }}
-                          />
-                          <span className="text-sm text-gray-700 flex-1">{c.speciesName}</span>
-                          <span className="text-sm font-bold text-gray-900">{c.totalCount}</span>
-                          <div className="w-24 bg-gray-100 rounded-full h-1.5">
-                            <div
-                              className="h-1.5 rounded-full"
-                              style={{
-                                width: `${(c.totalCount / fishCounts.totalFish) * 100}%`,
-                                backgroundColor: COLORS[i % COLORS.length],
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-400 text-center py-4">
-                    Belum ada data deteksi ikan dalam sesi ini
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
+      {/* ── Stacked Bar: Tren Deteksi Ikan per Misi ── */}
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-gray-700">Tren Deteksi Ikan per Misi</h3>
+          <span className="text-xs text-gray-400">Akumulasi per survei</span>
         </div>
+        {stackedBarData.length > 0 && stackedBarData.some(row => speciesKeys.some((sp: string) => row[sp] > 0)) ? (
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={stackedBarData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="date" tickFormatter={fmtAxisDate} tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip />
+              <Legend iconType="circle" iconSize={10} />
+              {speciesKeys.map((sp: string, i: number) => (
+                <Bar key={sp} dataKey={sp} stackId="a" fill={getColor(sp, i)} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="flex items-center justify-center h-40 text-gray-300 text-sm">Belum ada data deteksi per misi</div>
+        )}
+      </div>
 
-        {/* Kanan: Chart Populasi Global */}
-        <div className="space-y-4">
-
-          {/* Pie chart total spesies */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2">
-                <Fish className="h-5 w-5 text-teal-500" />
-                Total Populasi
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {summary?.species?.length > 0 ? (
-                <>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <PieChart>
-                      <Pie
-                        data={summary.species}
-                        dataKey="total"
-                        nameKey="speciesName"
-                        cx="50%" cy="50%"
-                        outerRadius={80}
-                        label={({ speciesName, percentage }) =>
-                          `${speciesName} ${percentage}%`
-                        }
-                      >
-                        {summary.species.map((_: any, i: number) => (
-                          <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(value: any, name: any) => [value, name]}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="mt-3 space-y-1.5">
-                    {summary.species.map((s: any, i: number) => (
-                      <div key={s.speciesName} className="flex items-center justify-between text-sm">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                          <span className="text-gray-600">{s.speciesName}</span>
-                        </div>
-                        <span className="font-semibold text-gray-800">{s.total}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="text-center py-8 text-gray-400 text-sm">
-                  Belum ada data deteksi
-                </div>
+      {/* ── Riwayat Misi Table ── */}
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-700">Riwayat Misi</h3>
+          <span className="text-xs text-gray-400">{sessions.length} misi tercatat</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-100">
+                {['TANGGAL', 'NAMA MISI', 'WAKTU MISI', 'SESSION ID', 'DURASI', 'JML IKAN', 'SPESIES', 'PH', 'TDS', 'SUHU', 'DO', 'AKSI'].map(h => (
+                  <th key={h} className="px-4 py-3 text-left font-semibold text-gray-400 tracking-wider whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {sessions.length > 0 ? sessions.slice(0, 20).map((s: any) => (
+                <SessionRow key={s.id} session={s} />
+              )) : (
+                <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-300">Belum ada data misi</td></tr>
               )}
-            </CardContent>
-          </Card>
-
-          {/* Bar chart per spesies */}
-          {summary?.species?.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Perbandingan Spesies</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={summary.species} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis type="number" tick={{ fontSize: 11 }} />
-                    <YAxis
-                      type="category"
-                      dataKey="speciesName"
-                      tick={{ fontSize: 11 }}
-                      width={80}
-                    />
-                    <Tooltip />
-                    <Bar dataKey="total" name="Total" radius={[0, 4, 4, 0]}>
-                      {summary.species.map((_: any, i: number) => (
-                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Session Row — fetch fish + telemetry per session ────────────────────────
+function SessionRow({ session }: { session: any }) {
+  const { data: fishData } = useSWR(`/api/fish-counts/session/${session.id}`, apiClient.swrFetcher, { revalidateOnFocus: false })
+  const { data: telData } = useSWR(`/api/analytics/telemetry?hours=9999&session_id=${session.id}`, apiClient.swrFetcher, { revalidateOnFocus: false })
+
+  const fish = (fishData as any)?.data
+  const tel = (telData as any)?.data?.summary
+
+  const sessionLabel = `session_${session.id.slice(-3)}`
+
+  return (
+    <tr className="hover:bg-gray-50 transition-colors">
+      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDate(session.startTime)}</td>
+      <td className="px-4 py-3 font-semibold text-gray-800 whitespace-nowrap">{session.locationName}</td>
+      <td className="px-4 py-3 text-gray-500 font-mono whitespace-nowrap">{fmtTimeRange(session.startTime, session.endTime)}</td>
+      <td className="px-4 py-3">
+        <span className="font-mono text-gray-400 border border-gray-200 px-2 py-0.5 rounded-lg bg-gray-50">{sessionLabel}</span>
+      </td>
+      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{fmtDuration(session.startTime, session.endTime)}</td>
+      <td className="px-4 py-3 font-bold text-blue-600">{fish?.totalFish ?? '—'}</td>
+      <td className="px-4 py-3 font-bold text-green-600">{fish?.speciesCount ?? '—'}</td>
+      <td className="px-4 py-3 text-gray-600">{tel?.avgPh ?? '—'}</td>
+      <td className="px-4 py-3 text-yellow-600">{tel?.avgTds ?? '—'}</td>
+      <td className="px-4 py-3 text-gray-600">{tel?.avgTemp ?? '—'}</td>
+      <td className="px-4 py-3 text-orange-500">{tel?.avgDo ?? '—'}</td>
+      <td className="px-4 py-3">
+        <button
+          onClick={() => downloadSessionCSV(session, fish, tel)}
+          className="flex items-center gap-1 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap"
+        >
+          ↓ CSV
+        </button>
+      </td>
+    </tr>
   )
 }

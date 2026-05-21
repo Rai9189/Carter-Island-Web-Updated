@@ -1,373 +1,342 @@
-'use client';
+'use client'
 
-import useSWR from 'swr';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import useSWR from 'swr'
+import { useRouter } from 'next/navigation'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+import { apiClient } from '@/lib/api-client'
 import {
-  Activity,
-  Droplets,
-  Thermometer,
-  Navigation,
-  Compass,
-  Gauge,
+  Sailboat,
+  CalendarDays,
+  Timer,
   MapPin,
-  Waves,
+  Droplets,
+  Zap,
   Wind,
-} from 'lucide-react';
-import MapButton from '@/components/ui/MapButton';
-import { apiClient } from '@/lib/api-client';
+  Thermometer,
+  ChevronRight,
+  Gauge,
+  Navigation,
+  Activity,
+  Anchor,
+} from 'lucide-react'
 
-const fetcher = apiClient.swrFetcher;
+const fetcher = apiClient.swrFetcher
 
-/**
- * Warna indikator pH air laut:
- *  < 7.5  → asam (merah)
- *  7.5–8.4 → normal (hijau)
- *  > 8.4  → basa (kuning)
- */
-function getPhColor(ph: number) {
-  if (ph < 7.5) return { text: 'text-red-600', bg: 'bg-red-100' };
-  if (ph > 8.4) return { text: 'text-yellow-600', bg: 'bg-yellow-100' };
-  return { text: 'text-green-600', bg: 'bg-green-100' };
+function getPhStatus(ph: number) {
+  if (ph < 7.5) return { label: 'Rendah', color: 'text-red-500', bar: 'bg-red-500' }
+  if (ph > 8.4) return { label: 'Tinggi', color: 'text-yellow-500', bar: 'bg-yellow-500' }
+  return { label: 'Normal', color: 'text-green-500', bar: 'bg-green-500' }
 }
 
-/**
- * Warna indikator dissolved oxygen:
- *  < 5 mg/L → rendah (merah)
- *  5–8      → normal (hijau)
- *  > 8      → tinggi (biru)
- */
-function getDoColor(doVal: number) {
-  if (doVal < 5) return 'text-red-600';
-  if (doVal > 8) return 'text-blue-600';
-  return 'text-green-600';
+function getTdsStatus(tds: number) {
+  if (tds < 200) return { label: 'Rendah', color: 'text-blue-500', bar: 'bg-blue-500' }
+  if (tds > 500) return { label: 'Tinggi', color: 'text-red-500', bar: 'bg-red-500' }
+  return { label: 'Normal', color: 'text-yellow-500', bar: 'bg-yellow-500' }
 }
+
+function getDoStatus(doVal: number) {
+  if (doVal < 5) return { label: 'Rendah', color: 'text-red-500', bar: 'bg-red-500' }
+  if (doVal > 8) return { label: 'Tinggi', color: 'text-blue-500', bar: 'bg-blue-500' }
+  return { label: 'Normal', color: 'text-green-500', bar: 'bg-green-500' }
+}
+
+function getTempStatus(temp: number) {
+  if (temp < 20) return { label: 'Dingin', color: 'text-blue-500', bar: 'bg-blue-500' }
+  if (temp > 32) return { label: 'Panas', color: 'text-red-500', bar: 'bg-red-500' }
+  return { label: 'Normal', color: 'text-green-500', bar: 'bg-green-500' }
+}
+
+function progressPercent(value: number, max: number) {
+  return Math.min(100, Math.max(0, (value / max) * 100))
+}
+
+function InfoCard({
+  label, value, icon: Icon, iconBg,
+}: {
+  label: string; value: string; icon: React.ElementType; iconBg: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4 flex items-center justify-between">
+      <div>
+        <p className="text-xs text-gray-400 mb-1">{label}</p>
+        <p className="text-lg font-bold text-gray-800 leading-tight">{value}</p>
+      </div>
+      <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${iconBg}`}>
+        <Icon className="w-5 h-5 text-white" />
+      </div>
+    </div>
+  )
+}
+
+function WaterCard({
+  label, value, unit, status, barPercent, icon: Icon, iconColor,
+}: {
+  label: string; value: string; unit: string
+  status: { label: string; color: string; bar: string }
+  barPercent: number; icon: React.ElementType; iconColor: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs text-gray-400">{label}</p>
+        <Icon className={`w-4 h-4 ${iconColor}`} />
+      </div>
+      <div className="flex items-baseline gap-1 mb-1">
+        <span className="text-2xl font-bold text-gray-800">{value}</span>
+        <span className="text-xs text-gray-400">{unit}</span>
+      </div>
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className={`text-xs font-medium ${status.color} flex items-center gap-0.5`}>
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${status.bar}`} />
+          {status.label}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${status.bar}`} style={{ width: `${barPercent}%` }} />
+      </div>
+    </div>
+  )
+}
+
+const SPECIES_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#9ca3af']
 
 interface DashboardContentProps {
-  userFullName: string;
-  userRole: string;
+  userFullName: string
+  userRole: string
 }
 
-export default function DashboardContent({
-  userFullName,
-  userRole,
-}: DashboardContentProps) {
-  /**
-   * Telemetry → data kualitas air (ph_level, tds_value, dissolved_oxygen, water_temp, depth)
-   * AUV Status → data navigasi ROV (roll, pitch, yaw, depth, heading, speed)
-   */
-  const { data: telemetryData, error: telemetryError } = useSWR(
-    '/api/telemetry/latest',
+export default function DashboardContent({ userFullName, userRole }: DashboardContentProps) {
+  const router = useRouter()
+
+  // Coba sesi RUNNING dulu (livestream aktif), fallback ke sesi COMPLETED terakhir
+  const { data: activeSessionData } = useSWR(
+    '/api/sessions/active',
     fetcher,
-    { refreshInterval: 2000, revalidateOnFocus: true }
-  );
-
-  const { data: auvData, error: auvError } = useSWR(
-    '/api/auv-status/latest',
+    { refreshInterval: 5000, shouldRetryOnError: false, errorRetryCount: 0, revalidateOnFocus: false }
+  )
+  const hasRunning = !!(activeSessionData as any)?.data
+  const { data: completedSessionData, isLoading: sessionLoading } = useSWR(
+    hasRunning ? null : '/api/sessions?limit=1&sort=desc&status_filter=Completed',
     fetcher,
-    { refreshInterval: 2000, revalidateOnFocus: true }
-  );
+    { refreshInterval: 30000, revalidateOnFocus: false }
+  )
 
-  const telemetry = (telemetryData as any)?.data;
-  const auv       = (auvData as any)?.data;
-  const isLoading = !telemetry && !auv && !telemetryError && !auvError;
+  const session = hasRunning
+    ? (activeSessionData as any)?.data
+    : (() => {
+        const raw = (completedSessionData as any)?.data
+        return Array.isArray(raw) ? raw[0] : raw
+      })()
 
-  const phColor = telemetry ? getPhColor(telemetry.phLevel) : { text: 'text-gray-500', bg: 'bg-gray-100' };
+  const { data: telemetryData } = useSWR('/api/telemetry/latest', fetcher, { refreshInterval: 5000, revalidateOnFocus: false })
+  const { data: auvData } = useSWR('/api/auv-status/latest', fetcher, { refreshInterval: 5000, revalidateOnFocus: false })
+  const { data: fishData } = useSWR(
+    session?.id ? `/api/fish-counts/session/${session.id}` : null,
+    fetcher,
+    { refreshInterval: 5000, revalidateOnFocus: false }
+  )
+  const telemetry = (telemetryData as any)?.data
+  const auv = (auvData as any)?.data
+  const fishRaw = (fishData as any)?.data
+
+  // Loading state
+  if (sessionLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="flex flex-col items-center gap-3 text-gray-400">
+          <div className="w-8 h-8 border-2 border-gray-200 border-t-blue-400 rounded-full animate-spin" />
+          <p className="text-sm">Memuat data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Empty state — belum ada misi sama sekali
+  if (!session) {
+    return (
+      <div className="flex flex-col items-center justify-center h-80 text-center">
+        <div className="w-20 h-20 rounded-full bg-blue-50 flex items-center justify-center mb-4">
+          <Anchor className="w-9 h-9 text-blue-300" />
+        </div>
+        <h3 className="text-lg font-semibold text-gray-600 mb-1">Belum Ada Misi</h3>
+        <p className="text-sm text-gray-400 max-w-xs">
+          Dashboard akan menampilkan data setelah misi pertama dimulai.
+        </p>
+      </div>
+    )
+  }
+
+  // Ada misi — tampilkan semua data
+  const ph = telemetry?.phLevel ?? 0
+  const tds = telemetry?.tdsValue ?? 0
+  const doVal = telemetry?.dissolvedOxygen ?? 0
+  const temp = telemetry?.waterTemp ?? 0
+
+  const misiTerakhir = session.locationName ?? '—'
+  const tanggalMisi = session.startTime
+    ? new Date(session.startTime).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '—'
+  const durasi = (() => {
+    if (!session.startTime) return '—'
+    const end = session.endTime ? new Date(session.endTime) : new Date()
+    const diffMs = end.getTime() - new Date(session.startTime).getTime()
+    if (diffMs <= 0) return '—'
+    const h = Math.floor(diffMs / 3600000)
+    const m = Math.floor((diffMs % 3600000) / 60000)
+    const s = Math.floor((diffMs % 60000) / 1000)
+    return h > 0 ? `${h}j ${String(m).padStart(2,'0')}m` : `${m}m ${String(s).padStart(2,'0')}d`
+  })()
+  const lokasi = session.locationName ?? '—'
+
+  const speciesCounts: Array<{speciesName: string; totalCount: number}> = fishRaw?.counts ?? []
+  const speciesTotal: number = fishRaw?.totalFish ?? 0
+  const speciesChartData = speciesCounts.map(c => ({ name: c.speciesName, value: c.totalCount }))
+  const hasSpeciesData = speciesChartData.length > 0
+
+  const sensorHealth = [
+    { label: 'Gyroscope', ok: !!auv?.gyroscope },
+    { label: 'Accelerometer', ok: !!auv?.accelerometer },
+    { label: 'Magnetometer', ok: !!auv?.magnetometer },
+  ]
 
   return (
-    <>
-      {/* ── Stats Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+    <div className="space-y-4">
 
-        {/* pH Air */}
-        <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500">pH Air</p>
-                <p className={`text-2xl font-bold ${phColor.text}`}>
-                  {isLoading ? '...' : telemetry ? telemetry.phLevel.toFixed(2) : '--'}
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">Normal: 7.5–8.4</p>
-              </div>
-              <div className={`w-11 h-11 ${phColor.bg} rounded-xl flex items-center justify-center`}>
-                <Droplets className={`w-5 h-5 ${phColor.text}`} />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Suhu Air */}
-        <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500">Suhu Air</p>
-                <p className="text-2xl font-bold text-orange-600">
-                  {isLoading ? '...' : telemetry ? `${telemetry.waterTemp.toFixed(1)}°C` : '--'}
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">Sensor ROV</p>
-              </div>
-              <div className="w-11 h-11 bg-orange-100 rounded-xl flex items-center justify-center">
-                <Thermometer className="w-5 h-5 text-orange-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Kedalaman */}
-        <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500">Kedalaman</p>
-                <p className="text-2xl font-bold text-blue-600">
-                  {isLoading ? '...' : auv ? `${auv.depth.toFixed(1)}m` : '--'}
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">IMU Pixhawk</p>
-              </div>
-              <div className="w-11 h-11 bg-blue-100 rounded-xl flex items-center justify-center">
-                <Waves className="w-5 h-5 text-blue-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Kecepatan */}
-        <Card className="border-0 shadow-sm">
-          <CardContent className="px-6 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-500">Kecepatan</p>
-                <p className="text-2xl font-bold text-purple-600">
-                  {isLoading ? '...' : auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">Sensor ROV</p>
-              </div>
-              <div className="w-11 h-11 bg-purple-100 rounded-xl flex items-center justify-center">
-                <Wind className="w-5 h-5 text-purple-600" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Row 1: Info Misi */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <InfoCard label="Misi Terakhir" value={misiTerakhir} icon={Sailboat} iconBg="bg-blue-400" />
+        <InfoCard label="Tanggal, Waktu" value={tanggalMisi} icon={CalendarDays} iconBg="bg-teal-400" />
+        <InfoCard label="Durasi" value={durasi} icon={Timer} iconBg="bg-yellow-400" />
+        <InfoCard label="Lokasi Misi" value={lokasi} icon={MapPin} iconBg="bg-red-400" />
       </div>
 
-      {/* ── Main Content ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Row 2: Water Quality */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <WaterCard label="pH Air" value={ph.toFixed(1)} unit="pH" status={getPhStatus(ph)} barPercent={progressPercent(ph, 14)} icon={Droplets} iconColor="text-blue-400" />
+        <WaterCard label="TDS" value={tds.toFixed(0)} unit="ppm" status={getTdsStatus(tds)} barPercent={progressPercent(tds, 1000)} icon={Zap} iconColor="text-yellow-400" />
+        <WaterCard label="DO (Dissolved Oxygen)" value={doVal.toFixed(1)} unit="mg/L" status={getDoStatus(doVal)} barPercent={progressPercent(doVal, 15)} icon={Wind} iconColor="text-red-400" />
+        <WaterCard label="Suhu Air" value={temp.toFixed(1)} unit="°C" status={getTempStatus(temp)} barPercent={progressPercent(temp, 50)} icon={Thermometer} iconColor="text-green-400" />
+      </div>
 
-        {/* Kiri: Telemetri lengkap */}
-        <div className="lg:col-span-2 space-y-4">
+      {/* Row 3: Telemetry + Species */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
 
-          {/* Water Quality */}
-          <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Droplets className="h-5 w-5 text-blue-600" />
-                Kualitas Air — Live Sensor
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* Telemetry Data */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-700 flex items-center gap-2">
+              <Navigation className="w-4 h-4 text-blue-500" />
+              Telemetry Data
+            </h2>
+            <button
+              onClick={() => router.push('/dashboard/recordings')}
+              className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors"
+            >
+              Buka Recording <ChevronRight className="w-3 h-3" />
+            </button>
+          </div>
 
-                {/* pH */}
-                <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl border border-blue-200">
-                  <p className="text-xs font-medium text-blue-600 mb-1">pH Level</p>
-                  <p className={`text-2xl font-bold ${phColor.text}`}>
-                    {telemetry ? telemetry.phLevel.toFixed(2) : '--'}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">Ideal: 7.5–8.4</p>
-                </div>
-
-                {/* TDS */}
-                <div className="p-4 bg-gradient-to-br from-teal-50 to-teal-100 rounded-xl border border-teal-200">
-                  <p className="text-xs font-medium text-teal-600 mb-1">TDS</p>
-                  <p className="text-2xl font-bold text-teal-700">
-                    {telemetry ? `${telemetry.tdsValue.toFixed(0)}` : '--'}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">ppm</p>
-                </div>
-
-                {/* Dissolved Oxygen */}
-                <div className="p-4 bg-gradient-to-br from-cyan-50 to-cyan-100 rounded-xl border border-cyan-200">
-                  <p className="text-xs font-medium text-cyan-600 mb-1">Dissolved O₂</p>
-                  <p className={`text-2xl font-bold ${telemetry ? getDoColor(telemetry.dissolvedOxygen) : 'text-gray-400'}`}>
-                    {telemetry ? telemetry.dissolvedOxygen.toFixed(1) : '--'}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">mg/L</p>
-                </div>
-
-                {/* Suhu */}
-                <div className="p-4 bg-gradient-to-br from-orange-50 to-orange-100 rounded-xl border border-orange-200">
-                  <p className="text-xs font-medium text-orange-600 mb-1">Suhu Air</p>
-                  <p className="text-2xl font-bold text-orange-700">
-                    {telemetry ? telemetry.waterTemp.toFixed(1) : '--'}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">°C</p>
-                </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Gauge className="w-4 h-4 text-gray-500" />
+                <span className="text-sm font-medium text-gray-600">Attitude</span>
               </div>
-            </CardContent>
-          </Card>
-
-          {/* AUV Navigation */}
-          <Card className="border-0 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Navigation className="h-5 w-5 text-indigo-600" />
-                Navigasi ROV — IMU Pixhawk
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-
-                {/* Attitude */}
-                <div className="p-4 bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Gauge className="h-4 w-4 text-indigo-600" />
-                    <p className="text-xs font-semibold text-indigo-700">Attitude</p>
+              <div className="space-y-2">
+                {[
+                  { label: 'Roll', value: auv?.roll != null ? `${auv.roll.toFixed(1)}°` : '—' },
+                  { label: 'Pitch', value: auv?.pitch != null ? `${auv.pitch.toFixed(1)}°` : '—' },
+                  { label: 'Yaw', value: auv?.yaw != null ? `${auv.yaw.toFixed(0)}°` : '—' },
+                ].map(({ label, value }) => (
+                  <div key={label} className="flex justify-between items-center text-sm">
+                    <span className="text-gray-500">{label}</span>
+                    <span className="font-semibold text-gray-800">{value}</span>
                   </div>
-                  <div className="space-y-1 text-sm">
-                    {[
-                      { label: 'Roll',  value: auv?.roll },
-                      { label: 'Pitch', value: auv?.pitch },
-                      { label: 'Yaw',   value: auv?.yaw },
-                    ].map(({ label, value }) => (
-                      <div key={label} className="flex justify-between">
-                        <span className="text-gray-500">{label}</span>
-                        <span className="font-medium text-gray-800">
-                          {value != null ? `${value.toFixed(1)}°` : '--'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Heading & Depth */}
-                <div className="p-4 bg-gradient-to-br from-violet-50 to-violet-100 rounded-xl border border-violet-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Compass className="h-4 w-4 text-violet-600" />
-                    <p className="text-xs font-semibold text-violet-700">Heading & Depth</p>
-                  </div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Heading</span>
-                      <span className="font-bold text-violet-700">
-                        {auv?.heading ?? '--'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Depth</span>
-                      <span className="font-medium text-gray-800">
-                        {auv ? `${auv.depth.toFixed(1)}m` : '--'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Speed</span>
-                      <span className="font-medium text-gray-800">
-                        {auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Sensor IMU */}
-                <div className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Activity className="h-4 w-4 text-slate-600" />
-                    <p className="text-xs font-semibold text-slate-700">Sensor IMU</p>
-                  </div>
-                  <div className="space-y-1.5 text-sm">
-                    {[
-                      { label: 'Gyroscope',     value: auv?.gyroscope },
-                      { label: 'Accelerometer', value: auv?.accelerometer },
-                      { label: 'Magnetometer',  value: auv?.magnetometer },
-                    ].map(({ label, value }) => (
-                      <div key={label} className="flex justify-between items-center">
-                        <span className="text-gray-500 text-xs">{label}</span>
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                          value
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-gray-100 text-gray-400'
-                        }`}>
-                          {value ? 'Active' : 'N/A'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
-            </CardContent>
-          </Card>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <MapPin className="w-4 h-4 text-red-400" />
+                <span className="text-sm font-medium text-gray-600">Posisi</span>
+              </div>
+              <div className="space-y-2">
+                {[
+                  { label: 'Depth', value: auv?.depth != null ? `${auv.depth.toFixed(1)} m` : '—' },
+                  { label: 'Heading', value: auv?.heading ?? '—' },
+                  { label: 'Speed', value: auv?.speed != null ? `${auv.speed.toFixed(1)} kts` : '—' },
+                ].map(({ label, value }) => (
+                  <div key={label} className="flex justify-between items-center text-sm">
+                    <span className="text-gray-500">{label}</span>
+                    <span className="font-semibold text-gray-800">{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="md:col-span-2 bg-gray-50 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Activity className="w-4 h-4 text-gray-500" />
+                <span className="text-sm font-medium text-gray-600">Health</span>
+              </div>
+              <div className="space-y-2">
+                {sensorHealth.map(({ label, ok }) => (
+                  <div key={label} className="flex justify-between items-center text-sm">
+                    <span className="text-gray-500">{label}</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${ok ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
+                      {ok ? 'OK' : 'N/A'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Kanan: Peta Lokasi */}
-        <Card className="border-0 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <MapPin className="h-5 w-5 text-purple-600" />
-              Lokasi Survei
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {/* Map embed */}
-              <div className="w-full h-48 rounded-xl overflow-hidden border border-gray-200 relative">
-                <iframe
-                  src="https://www.google.com/maps/embed?pb=!1m14!1m12!1m3!1d3961.785!2d110.63642!3d-6.62177!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f15.1!5e0!3m2!1sen!2sid!4v1699123456789!5m2!1sen!2sid"
-                  width="100%"
-                  height="100%"
-                  style={{ border: 0 }}
-                  allowFullScreen
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                  className="rounded-xl"
-                />
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
-                  <div className="relative flex items-center justify-center">
-                    <div className="absolute w-6 h-6 bg-red-500 rounded-full animate-ping opacity-75" />
-                    <div className="absolute w-4 h-4 bg-red-500 rounded-full animate-pulse" />
-                    <div className="relative w-2 h-2 bg-red-600 rounded-full" />
-                  </div>
+        {/* Species Distribution */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <h2 className="font-semibold text-gray-700 mb-4">Species Distribution</h2>
+          {hasSpeciesData ? (
+            <div className="flex flex-col items-center">
+              <div className="relative w-full h-52">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={speciesChartData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={2} dataKey="value" startAngle={90} endAngle={-270}>
+                      {speciesChartData.map((_, index) => (
+                        <Cell key={`cell-${index}`} fill={SPECIES_COLORS[index % SPECIES_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', fontSize: '12px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="text-3xl font-bold text-gray-800">{speciesTotal}</span>
+                  <span className="text-xs text-gray-400">Total</span>
                 </div>
               </div>
-
-              {/* Info navigasi ringkas */}
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Depth</span>
-                    <span className="font-semibold text-blue-600">
-                      {auv ? `${auv.depth.toFixed(1)}m` : '--'}
-                    </span>
+              <div className="w-full space-y-1.5 mt-2">
+                {speciesChartData.map((entry, index) => (
+                  <div key={entry.name} className="flex items-center justify-between text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: SPECIES_COLORS[index % SPECIES_COLORS.length] }} />
+                      <span className="text-gray-600">{entry.name}</span>
+                    </div>
+                    <span className="font-medium text-gray-700">{entry.value}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Speed</span>
-                    <span className="font-medium text-gray-800">
-                      {auv ? `${auv.speed.toFixed(1)} m/s` : '--'}
-                    </span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Heading</span>
-                    <span className="font-semibold text-violet-600">
-                      {auv?.heading ?? '--'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">pH</span>
-                    <span className={`font-semibold ${phColor.text}`}>
-                      {telemetry ? telemetry.phLevel.toFixed(2) : '--'}
-                    </span>
-                  </div>
-                </div>
+                ))}
               </div>
-
-              <MapButton lat={-6.621770076466091} lng={110.64180349373554} className="w-full">
-                View Full Map
-              </MapButton>
             </div>
-          </CardContent>
-        </Card>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-52">
+              <div className="w-20 h-20 rounded-full border-4 border-dashed border-gray-200 flex items-center justify-center mb-3">
+                <span className="text-3xl">🐟</span>
+              </div>
+              <p className="text-sm text-gray-400">Belum ada data deteksi</p>
+            </div>
+          )}
+        </div>
       </div>
-    </>
-  );
+    </div>
+  )
 }

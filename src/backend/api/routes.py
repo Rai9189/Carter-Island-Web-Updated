@@ -194,9 +194,23 @@ def setup_routes(app: FastAPI):
         try:
             while True:
                 data = await websocket.receive_text()
-                msg = json.loads(data)
+                try:
+                    msg = json.loads(data)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON dari {client_id}: {e}")
+                    continue
                 if msg.get("type") == "offer":
-                    await handle_offer(websocket, client_id, msg)
+                    try:
+                        await handle_offer(websocket, client_id, msg)
+                    except Exception as offer_err:
+                        logger.error(f"handle_offer error {client_id}: {offer_err}")
+                        try:
+                            await websocket.send_text(json.dumps({
+                                "type": "error",
+                                "message": f"Stream gagal: {offer_err}"
+                            }))
+                        except Exception:
+                            pass
                 elif msg.get("type") == "ice-candidate":
                     # Browser -> server ICE
                     pass

@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from typing import Dict
+from typing import Dict, Optional
 from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.contrib.media import MediaPlayer
 
 from config import (
     RTSP_TRANSPORT,
@@ -20,11 +21,14 @@ logger = logging.getLogger("carter-backend")
 peer_connections: Dict[str, RTCPeerConnection] = {}
 detection_tracks: Dict[str, RtspDetectionTrack] = {}
 bitrate_tasks: Dict[str, asyncio.Task] = {}
+media_players: Dict[str, MediaPlayer] = {}
 
 
 async def handle_offer(websocket, client_id: str, message: dict):
     # Get preferences from offer
-    offer_sdp = message["sdp"]
+    offer_sdp = message.get("sdp")
+    if not offer_sdp:
+        raise ValueError("Pesan offer tidak memiliki field 'sdp'")
     pref_codec = (message.get("codec") or PREFER_CODEC).lower()
     max_kbps = int(message.get("maxBitrateKbps") or MAX_BITRATE_KBPS_DEFAULT)
     fps = int(message.get("fps") or TARGET_FPS)
@@ -40,10 +44,28 @@ async def handle_offer(websocket, client_id: str, message: dict):
     pc = RTCPeerConnection()
     peer_connections[client_id] = pc
 
-    # Create RTSP source
-    player = make_rtsp_player(transport)
+    # Buka RTSP di thread executor agar tidak memblokir event loop
+    # av.open() di MediaPlayer adalah blocking call — jika dijalankan langsung
+    # di async function, seluruh event loop (termasuk Ctrl+C) akan terhenti
+    loop = asyncio.get_running_loop()
+    try:
+        player = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: make_rtsp_player(transport)),
+            timeout=6.0
+        )
+    except asyncio.TimeoutError:
+        peer_connections.pop(client_id, None)
+        raise RuntimeError("RTSP timeout — mediamtx tidak merespons dalam 6 detik. Pastikan ada sumber video.")
+    except Exception as exc:
+        peer_connections.pop(client_id, None)
+        raise RuntimeError(f"RTSP gagal: {exc}")
+
     if not player.video:
-        raise RuntimeError("RTSP player has no video track")
+        peer_connections.pop(client_id, None)
+        player.stop()
+        raise RuntimeError("RTSP tidak memiliki video track")
+
+    media_players[client_id] = player
 
     # Create detection track
     det_track = RtspDetectionTrack(player.video)
@@ -116,18 +138,30 @@ async def cleanup_pc(client_id: str):
             pass
         logger.info(f"PC {client_id} closed")
 
+    # Stop MediaPlayer di executor agar tidak blokir event loop
+    player = media_players.pop(client_id, None)
+    if player:
+        try:
+            loop = asyncio.get_running_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, player.stop),
+                timeout=3.0
+            )
+            logger.info(f"MediaPlayer {client_id} stopped")
+        except asyncio.TimeoutError:
+            logger.warning(f"MediaPlayer {client_id} stop timeout, forcing continue")
+        except Exception as e:
+            logger.warning(f"Error stopping MediaPlayer {client_id}: {e}")
+
 
 def get_peer_connections() -> Dict[str, RTCPeerConnection]:
     return peer_connections
 
-
-from typing import Optional
 
 def get_detection_track(client_id: str) -> Optional[RtspDetectionTrack]:
     return detection_tracks.get(client_id)
 
 
 async def cleanup_all():
-    pass
     for cid in list(peer_connections.keys()):
         await cleanup_pc(cid)

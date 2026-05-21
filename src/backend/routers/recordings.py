@@ -11,19 +11,71 @@ Perubahan dari versi lama:
 """
 import os
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from database.models import VideoPath
+from database.models import VideoPath, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user
 from config import RECORDINGS_DIR
 
 logger = logging.getLogger("carter-backend")
 
 router = APIRouter(prefix="/api/recordings", tags=["Recordings"])
+
+
+# ==========================
+# POST /api/recordings/save — selesaikan sesi & simpan info misi
+# ==========================
+@router.post("/save")
+def save_recording_session(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Dipanggil frontend setelah user mengisi form simpan recording.
+    Menandai sesi sebagai Completed dan update nama lokasi/misi.
+
+    Payload:
+        sessionId   : str — ID sesi aktif (wajib)
+        missionName : str — nama misi (dipakai sebagai location_name)
+        location    : str — lokasi survei (fallback jika missionName kosong)
+        description : str — deskripsi opsional (tidak disimpan ke DB saat ini)
+        clientId    : str — opsional, untuk referensi logging
+    """
+    session_id = body.get("sessionId")
+    mission_name = (body.get("missionName") or "").strip()
+    location = (body.get("location") or "").strip()
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId wajib diisi")
+
+    session = db.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session tidak ditemukan")
+
+    if session.status != SessionStatus.RUNNING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session sudah {session.status.value}, tidak bisa diubah lagi"
+        )
+
+    now = datetime.now(timezone.utc)
+    label = mission_name or location
+    if label:
+        session.location_name = label
+    session.status = SessionStatus.COMPLETED
+    session.end_time = now
+    session.updated_at = now
+
+    db.commit()
+
+    logger.info(f"Session {session_id} → Completed via save_recording (mission: {label})")
+    return {"success": True, "message": "Recording berhasil disimpan"}
 
 
 # ==========================
@@ -150,7 +202,7 @@ def _format_recording(r: VideoPath) -> dict:
         "sessionId": r.session_id,
         "fileName": r.file_name,
         "filePath": r.file_path,
-        "fileSize": str(r.file_size),
+        "fileSize": r.file_size,
         "format": r.format,
         "duration": r.duration,
         "createdAt": r.created_at.isoformat(),

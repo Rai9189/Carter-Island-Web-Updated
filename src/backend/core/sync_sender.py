@@ -104,7 +104,7 @@ async def sync_telemetry_job():
             logger.warning(f"Sync telemetry gagal — status {response.status_code}")
 
     except (httpx.ConnectError, httpx.TimeoutException):
-        logger.debug("Sync telemetry — Base Station tidak dapat dijangkau, akan retry")
+        logger.warning("Sync telemetry — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
         db.rollback()
         logger.error(f"Sync telemetry error: {e}")
@@ -178,7 +178,7 @@ async def sync_detections_job():
             logger.warning(f"Sync detections gagal — status {response.status_code}")
 
     except (httpx.ConnectError, httpx.TimeoutException):
-        logger.debug("Sync detections — Base Station tidak dapat dijangkau, akan retry")
+        logger.warning("Sync detections — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
         db.rollback()
         logger.error(f"Sync detections error: {e}")
@@ -256,7 +256,7 @@ async def sync_auv_status_job():
             logger.warning(f"Sync auv_status gagal — status {response.status_code}")
 
     except (httpx.ConnectError, httpx.TimeoutException):
-        logger.debug("Sync auv_status — Base Station tidak dapat dijangkau, akan retry")
+        logger.warning("Sync auv_status — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
         db.rollback()
         logger.error(f"Sync auv_status error: {e}")

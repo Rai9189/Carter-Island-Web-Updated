@@ -1,7 +1,16 @@
+import asyncio
 import logging
+import os
+import signal
+import sys
+import threading
 import torch
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+
+# Fix Ctrl+C di Windows — event loop default Windows tidak handle SIGINT dengan benar
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +51,30 @@ logger = logging.getLogger("carter-backend")
 inference_executor = ThreadPoolExecutor(max_workers=2)
 
 
+def _install_force_exit_handler(timeout: int = 8):
+    """Pasang fallback: jika proses belum mati dalam `timeout` detik setelah
+    Ctrl+C, paksa keluar dengan os._exit(0) agar tidak macet selamanya."""
+    original = signal.getsignal(signal.SIGINT)
+
+    def _handler(signum, frame):
+        def _force():
+            import time
+            time.sleep(timeout)
+            logger.warning(f"Force exit setelah {timeout}s (proses tidak berhenti sendiri)")
+            os._exit(0)
+        t = threading.Thread(target=_force, daemon=True, name="force-exit-watchdog")
+        t.start()
+        if callable(original):
+            original(signum, frame)
+        else:
+            raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _handler)
+
+
+_install_force_exit_handler(timeout=8)
+
+
 # ==========================
 # Lifespan Manager
 # ==========================
@@ -56,6 +89,29 @@ async def lifespan(app: FastAPI):
         logger.error("Tidak bisa konek ke database! Periksa DATABASE_URL di .env")
         raise RuntimeError("Database connection failed")
     init_db()
+
+    # Abort sesi RUNNING yang tertinggal dari restart sebelumnya
+    try:
+        from database.connection import SessionLocal
+        from database.models import MonitoringSession, SessionStatus
+        from datetime import datetime, timezone
+        _db = SessionLocal()
+        try:
+            stale = _db.query(MonitoringSession).filter(
+                MonitoringSession.status == SessionStatus.RUNNING
+            ).all()
+            if stale:
+                now = datetime.now(timezone.utc)
+                for s in stale:
+                    s.status = SessionStatus.ABORTED
+                    s.end_time = now
+                    s.updated_at = now
+                _db.commit()
+                logger.warning(f"Auto-aborted {len(stale)} sesi RUNNING dari restart sebelumnya")
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.warning(f"Gagal auto-abort sesi lama: {_e}")
 
     # Load YOLO model
     load_custom_model()
@@ -87,8 +143,13 @@ async def lifespan(app: FastAPI):
             logger.info("Scheduler stopped")
 
         cleanup_all_recordings()
-        await cleanup_all()
-        inference_executor.shutdown(wait=True)
+
+        try:
+            await asyncio.wait_for(cleanup_all(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("Cleanup timeout — forcing shutdown")
+
+        inference_executor.shutdown(wait=False)
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -148,5 +209,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_level="info",
-        access_log=False
+        access_log=False,
+        loop="asyncio",
+        timeout_graceful_shutdown=5,
     )
