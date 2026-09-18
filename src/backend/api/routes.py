@@ -67,7 +67,7 @@ def setup_routes(app: FastAPI):
         }
 
     @app.get("/api/performance")
-    async def perf():
+    async def perf(_: dict = Depends(get_current_user)):
         """Performance metrics endpoint"""
         model = get_model()
         return {
@@ -80,12 +80,12 @@ def setup_routes(app: FastAPI):
         }
 
     @app.get("/api/model-info")
-    async def model_info():
+    async def model_info(_: dict = Depends(get_current_user)):
         """Model information endpoint"""
         return get_model_info()
 
     @app.post("/api/recording/start/{client_id}")
-    async def start_recording_endpoint(client_id: str):
+    async def start_recording_endpoint(client_id: str, _: dict = Depends(get_current_user)):
         """Start recording for a client"""
         detection_track = get_detection_track(client_id)
         if not detection_track:
@@ -105,7 +105,7 @@ def setup_routes(app: FastAPI):
             return {"success": False, "error": "Failed to start recording"}
 
     @app.post("/api/recording/stop/{client_id}")
-    async def stop_recording_endpoint(client_id: str):
+    async def stop_recording_endpoint(client_id: str, _: dict = Depends(get_current_user)):
         """Stop recording for a client"""
         if not is_recording(client_id):
             return {"success": False, "error": "Not recording"}
@@ -127,7 +127,7 @@ def setup_routes(app: FastAPI):
             return {"success": False, "error": "Failed to stop recording"}
 
     @app.get("/api/recording/status/{client_id}")
-    async def recording_status_endpoint(client_id: str):
+    async def recording_status_endpoint(client_id: str, _: dict = Depends(get_current_user)):
         """Get recording status for a client"""
         recording = is_recording(client_id)
         info = get_recording_info(client_id) if recording else None
