@@ -5,7 +5,7 @@ import json
 import os
 import torch
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from typing import Set
 
@@ -19,6 +19,7 @@ from webrtc.peer_connection import (
     get_detection_track
 )
 from config import RTSP_URL
+from core.dependencies import get_current_user
 
 logger = logging.getLogger("carter-backend")
 
@@ -136,7 +137,7 @@ def setup_routes(app: FastAPI):
         }
 
     @app.get("/api/video/stream/{filename}")
-    async def stream_video(filename: str):
+    async def stream_video(filename: str, _: dict = Depends(get_current_user)):
         """Stream video file for playback"""
         from config import RECORDINGS_DIR
 
@@ -160,7 +161,7 @@ def setup_routes(app: FastAPI):
         )
 
     @app.get("/api/video/download/{filename}")
-    async def download_video(filename: str):
+    async def download_video(filename: str, _: dict = Depends(get_current_user)):
         """Download video file"""
         from config import RECORDINGS_DIR
 
