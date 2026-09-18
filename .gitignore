@@ -226,15 +226,17 @@ Thumbs.db
 node_modules/.prisma/
 prisma/migrations/migration_lock.toml
 
-Add-Content .gitignore "`n# MediaMTX binary`nmediamtx.exe"
-
-# Tambah ke .gitignore
-Add-Content .gitignore "`n# Old files - keep local only`nsrc/backend/main_old.py`nsrc/backend/database/detections.py`nsrc/backend/verify_fase1.py`nsrc/backend/verify_fase2.py`nsrc/backend/verify_fase3.py`nsrc/backend/verify_fase4.py`nsrc/backend/verify_fase5.py"
-
-main_old.py
-verify_fase1.py
-verify_fase2.py
-verify_fase3.py
-verify_fase4.py
-verify_fase5.py
+# MediaMTX binary
 mediamtx.exe
+
+# Old files - keep local only
+src/backend/main_old.py
+src/backend/database/detections.py
+src/backend/verify_fase1.py
+src/backend/verify_fase2.py
+src/backend/verify_fase3.py
+src/backend/verify_fase4.py
+src/backend/verify_fase5.py
+
+# graphify knowledge-graph output (generated, local only)
+graphify-out/
