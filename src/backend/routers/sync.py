@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import get_db
 from database.models import Telemetry, Detection, AUVStatus, MonitoringSession
-from core.dependencies import get_current_user
+from core.dependencies import get_current_user, verify_sync_token
 from core.cuid import generate_cuid
 
 logger = logging.getLogger("carter-backend")
@@ -47,7 +47,7 @@ _last_sync_info = {
 def sync_telemetry(
     body: dict,
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    _: None = Depends(verify_sync_token),
 ):
     """
     Terima batch data telemetri dari ROV dan simpan ke DB Base Station.
@@ -145,7 +145,7 @@ def sync_telemetry(
 def sync_detections(
     body: dict,
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    _: None = Depends(verify_sync_token),
 ):
     """
     Terima batch hasil deteksi YOLO dari ROV dan simpan ke DB Base Station.
@@ -240,7 +240,7 @@ def sync_detections(
 def sync_auv_status(
     body: dict,
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    _: None = Depends(verify_sync_token),
 ):
     """
     Terima batch data navigasi AUV dari ROV dan simpan ke DB Base Station.

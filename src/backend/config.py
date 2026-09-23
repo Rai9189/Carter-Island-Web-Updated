@@ -86,8 +86,11 @@ if not JWT_SECRET_KEY:
 # Contoh: BASE_STATION_URL=http://192.168.1.10:8000
 BASE_STATION_URL = os.getenv("BASE_STATION_URL", "")
 
-# Token JWT operator yang digunakan ROV untuk autentikasi ke Base Station.
-# Generate dengan login ke Base Station lalu copy access_token-nya.
+# Static shared secret untuk autentikasi ROV -> Base Station (machine-to-machine,
+# bukan JWT user). Base Station memverifikasi dengan membandingkan langsung ke
+# nilai ini (lihat core/dependencies.py:verify_sync_token) - tidak lewat tabel
+# User/expiry seperti JWT biasa. Generate string acak yang panjang dan sama
+# persis di kedua sisi (ROV dan Base Station).
 BASE_STATION_SYNC_TOKEN = os.getenv("BASE_STATION_SYNC_TOKEN", "")
 
 # Interval pengiriman data sync dalam detik (default 10 detik).

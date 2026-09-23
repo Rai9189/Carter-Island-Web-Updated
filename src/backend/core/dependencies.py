@@ -15,6 +15,7 @@ Cara pakai di router:
         return {"admin": current_user["email"]}
 """
 import logging
+import secrets
 from typing import Optional
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 from database.connection import get_db
 from database.models import User
 from auth.jwt import verify_token
+from config import BASE_STATION_SYNC_TOKEN
 
 logger = logging.getLogger("carter-backend")
 
@@ -95,7 +97,7 @@ def get_current_user(
     return {
         "id": user.id,
         "email": user.email,
-        "full_name": user.full_name,
+        "username": user.username,
         "role": user.role.value,
         "phone_number": user.phone_number,
     }
@@ -120,6 +122,39 @@ def require_admin(
             detail="Akses ditolak. Hanya admin yang diizinkan.",
         )
     return current_user
+
+
+# ==========================
+# Dependency: verify_sync_token
+# ==========================
+def verify_sync_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    request: Request = None,
+) -> None:
+    """
+    Dependency untuk endpoint sync SPPI (ROV -> Base Station).
+    Bandingkan token langsung ke BASE_STATION_SYNC_TOKEN (static shared
+    secret) pakai secrets.compare_digest (constant-time, cegah timing
+    attack) - TIDAK lewat verify_token()/tabel User seperti JWT user biasa.
+
+    Raises:
+        HTTPException 401 jika token tidak ada, kosong, atau tidak cocok
+        HTTPException 500 jika BASE_STATION_SYNC_TOKEN belum dikonfigurasi
+    """
+    if not BASE_STATION_SYNC_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="BASE_STATION_SYNC_TOKEN belum dikonfigurasi di server ini.",
+        )
+
+    token = get_token_from_request(credentials, request)
+
+    if not token or not secrets.compare_digest(token, BASE_STATION_SYNC_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sync token tidak valid.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 # ==========================
