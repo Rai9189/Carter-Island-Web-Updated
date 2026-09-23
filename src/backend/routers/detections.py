@@ -15,13 +15,14 @@ Perubahan dari versi lama:
 import logging
 from typing import Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database.connection import get_db
 from database.models import Detection
 from core.dependencies import get_current_user
+from core.csv_export import csv_response, parse_date_range
 
 logger = logging.getLogger("carter-backend")
 
@@ -195,6 +196,42 @@ def get_detection_stats_by_session(
             "distribution": distribution,
         },
     }
+
+
+# ==========================
+# GET /api/detections/export — export CSV
+# ==========================
+@router.get("/export")
+def export_detections(
+    session_id: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to_: Optional[str] = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Export data deteksi ke CSV. Filter opsional: session_id, from, to (ISO 8601).
+    """
+    from_date, to_date = parse_date_range(from_, to_)
+
+    query = db.query(Detection)
+    if session_id:
+        query = query.filter(Detection.session_id == session_id)
+    if from_date:
+        query = query.filter(Detection.detected_at >= from_date)
+    if to_date:
+        query = query.filter(Detection.detected_at <= to_date)
+
+    rows = query.order_by(Detection.detected_at.desc()).all()
+
+    header = ["id", "sessionId", "telemetryId", "speciesName", "confidence", "depthAtDetection", "frameNumber", "detectedAt", "createdAt"]
+    data = [
+        [d.id, d.session_id, d.telemetry_id, d.species_name, d.confidence, d.depth_at_detection, d.frame_number, d.detected_at.isoformat(), d.created_at.isoformat()]
+        for d in rows
+    ]
+
+    filename = f"detections_export_{session_id or 'all'}.csv"
+    return csv_response(filename, header, data)
 
 
 # ==========================

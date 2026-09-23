@@ -23,6 +23,7 @@ from database.connection import get_db
 from database.models import FishCount, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
+from core.csv_export import csv_response
 
 logger = logging.getLogger("carter-backend")
 
@@ -41,7 +42,7 @@ def save_fish_count(
 ):
     """
     Simpan atau update jumlah ikan per spesies dalam satu sesi.
-    Jika spesies sudah ada dalam sesi, total_count akan di-update
+    Jika spesies sudah ada dalam sesi, total_ikan akan di-update
     (ditambah dengan count baru). Jika belum ada, buat record baru.
 
     Payload:
@@ -76,7 +77,7 @@ def save_fish_count(
 
     if existing:
         # Update total count — tambah dengan deteksi baru
-        existing.total_count += int(count)
+        existing.total_ikan += int(count)
         existing.updated_at   = now
         db.commit()
         db.refresh(existing)
@@ -87,8 +88,8 @@ def save_fish_count(
             id=generate_cuid(),
             session_id=session_id,
             species_name=species_name,
-            total_count=int(count),
-            detected_at=now,
+            total_ikan=int(count),
+            waktu_deteksi=now,
             created_at=now,
             updated_at=now,
         )
@@ -148,7 +149,7 @@ def save_fish_count_batch(
         ).first()
 
         if existing:
-            existing.total_count += count
+            existing.total_ikan += count
             existing.updated_at   = now
             results.append(_format_fish_count(existing))
         else:
@@ -156,8 +157,8 @@ def save_fish_count_batch(
                 id=generate_cuid(),
                 session_id=session_id,
                 species_name=species_name,
-                total_count=count,
-                detected_at=now,
+                total_ikan=count,
+                waktu_deteksi=now,
                 created_at=now,
                 updated_at=now,
             )
@@ -189,11 +190,11 @@ def get_fish_counts_by_session(
     counts = (
         db.query(FishCount)
         .filter(FishCount.session_id == session_id)
-        .order_by(FishCount.total_count.desc())
+        .order_by(FishCount.total_ikan.desc())
         .all()
     )
 
-    total_fish = sum(c.total_count for c in counts)
+    total_fish = sum(c.total_ikan for c in counts)
 
     return {
         "success": True,
@@ -222,15 +223,15 @@ def get_fish_counts_summary(
     summary = (
         db.query(
             FishCount.species_name,
-            func.sum(FishCount.total_count).label("total"),
+            func.sum(FishCount.total_ikan).label("total"),
         )
         .group_by(FishCount.species_name)
-        .order_by(func.sum(FishCount.total_count).desc())
+        .order_by(func.sum(FishCount.total_ikan).desc())
         .limit(limit)
         .all()
     )
 
-    grand_total = db.query(func.sum(FishCount.total_count)).scalar() or 0
+    grand_total = db.query(func.sum(FishCount.total_ikan)).scalar() or 0
 
     return {
         "success": True,
@@ -274,7 +275,7 @@ def get_fish_counts(
 
     total  = query.count()
     counts = (
-        query.order_by(FishCount.total_count.desc())
+        query.order_by(FishCount.total_ikan.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -293,6 +294,32 @@ def get_fish_counts(
 
 
 # ==========================
+# GET /api/fish-counts/export — export CSV ringkasan
+# ==========================
+@router.get("/export")
+def export_fish_counts(
+    session_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Export ringkasan jumlah ikan per spesies ke CSV. Filter opsional: session_id.
+    Kolom: speciesName, totalCount, detectedAt (tanpa avg_size_cm — belum ada di skema).
+    """
+    query = db.query(FishCount)
+    if session_id:
+        query = query.filter(FishCount.session_id == session_id)
+
+    rows = query.order_by(FishCount.total_ikan.desc()).all()
+
+    header = ["speciesName", "totalCount", "detectedAt"]
+    data = [[c.species_name, c.total_ikan, c.waktu_deteksi.isoformat()] for c in rows]
+
+    filename = f"fish_counts_export_{session_id or 'all'}.csv"
+    return csv_response(filename, header, data)
+
+
+# ==========================
 # Helper
 # ==========================
 def _format_fish_count(c: FishCount) -> dict:
@@ -300,8 +327,8 @@ def _format_fish_count(c: FishCount) -> dict:
         "id": c.id,
         "sessionId": c.session_id,
         "speciesName": c.species_name,
-        "totalCount": c.total_count,
-        "detectedAt": c.detected_at.isoformat(),
+        "totalCount": c.total_ikan,
+        "detectedAt": c.waktu_deteksi.isoformat(),
         "createdAt": c.created_at.isoformat(),
         "updatedAt": c.updated_at.isoformat(),
     }

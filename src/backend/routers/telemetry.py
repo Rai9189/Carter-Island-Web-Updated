@@ -10,13 +10,14 @@ Perubahan dari versi lama:
 import logging
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
 from database.models import Telemetry, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
+from core.csv_export import csv_response, parse_date_range
 
 logger = logging.getLogger("carter-backend")
 
@@ -141,6 +142,42 @@ def save_telemetry(
     db.refresh(telemetry)
 
     return {"success": True, "data": _format_telemetry(telemetry)}
+
+
+# ==========================
+# GET /api/telemetry/export — export CSV
+# ==========================
+@router.get("/export")
+def export_telemetry(
+    session_id: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to_: Optional[str] = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """
+    Export data telemetri ke CSV. Filter opsional: session_id, from, to (ISO 8601).
+    """
+    from_date, to_date = parse_date_range(from_, to_)
+
+    query = db.query(Telemetry)
+    if session_id:
+        query = query.filter(Telemetry.session_id == session_id)
+    if from_date:
+        query = query.filter(Telemetry.timestamp >= from_date)
+    if to_date:
+        query = query.filter(Telemetry.timestamp <= to_date)
+
+    rows = query.order_by(Telemetry.timestamp.desc()).all()
+
+    header = ["id", "sessionId", "timestamp", "phLevel", "tdsValue", "dissolvedOxygen", "waterTemp", "depth", "createdAt"]
+    data = [
+        [t.id, t.session_id, t.timestamp.isoformat(), t.ph_level, t.tds_value, t.dissolved_oxygen, t.water_temp, t.depth, t.created_at.isoformat()]
+        for t in rows
+    ]
+
+    filename = f"telemetry_export_{session_id or 'all'}.csv"
+    return csv_response(filename, header, data)
 
 
 # ==========================
