@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import get_db
 from database.models import VideoPath, MonitoringSession, SessionStatus
-from core.dependencies import get_current_user
+from core.dependencies import get_current_user, require_admin
 from config import RECORDINGS_DIR
 
 logger = logging.getLogger("carter-backend")
@@ -138,7 +138,7 @@ def get_recording(
 def delete_recording(
     recording_id: str,
     db: Session = Depends(get_db),
-    _: dict = Depends(get_current_user),
+    _: dict = Depends(require_admin),
 ):
     recording = db.query(VideoPath).filter(VideoPath.id == recording_id).first()
     if not recording:
