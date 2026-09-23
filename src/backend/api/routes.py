@@ -20,6 +20,7 @@ from webrtc.peer_connection import (
 )
 from config import RTSP_URL
 from core.dependencies import get_current_user
+from core.system_metrics import get_cpu_percent, get_gpu_percent
 
 logger = logging.getLogger("carter-backend")
 
@@ -77,6 +78,8 @@ def setup_routes(app: FastAPI):
             "device": get_device_info(),
             "model_loaded": model is not None,
             "cuda_available": torch.cuda.is_available(),
+            "cpu_percent": get_cpu_percent(),
+            "gpu_percent": get_gpu_percent(),
         }
 
     @app.get("/api/model-info")
