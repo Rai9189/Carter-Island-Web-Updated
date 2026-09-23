@@ -23,6 +23,7 @@ from database.connection import get_db
 from database.models import FishCount, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
+from core.validation import safe_int
 from core.csv_export import csv_response
 
 logger = logging.getLogger("carter-backend")
@@ -52,13 +53,17 @@ def save_fish_count(
     """
     session_id   = body.get("session_id") or body.get("sessionId")
     species_name = body.get("species_name") or body.get("speciesName")
-    count        = body.get("count", 0)
 
     if not session_id or not species_name:
         raise HTTPException(
             status_code=400,
             detail="session_id dan species_name wajib diisi"
         )
+
+    try:
+        count = safe_int(body.get("count"), "count", default=0)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Verifikasi sesi ada
     session = db.query(MonitoringSession).filter(
@@ -138,7 +143,10 @@ def save_fish_count_batch(
 
     for item in counts:
         species_name = item.get("species_name") or item.get("speciesName")
-        count        = int(item.get("count", 0))
+        try:
+            count = safe_int(item.get("count"), "count", default=0)
+        except ValueError:
+            continue  # item tidak valid dalam batch - skip, jangan gagalkan seluruh batch
 
         if not species_name or count <= 0:
             continue

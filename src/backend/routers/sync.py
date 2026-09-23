@@ -24,6 +24,7 @@ from database.connection import get_db
 from database.models import Telemetry, Detection, AUVStatus, MonitoringSession
 from core.dependencies import get_current_user, verify_sync_token
 from core.cuid import generate_cuid
+from core.validation import safe_float
 
 logger = logging.getLogger("carter-backend")
 
@@ -106,19 +107,25 @@ def sync_telemetry(
         except (ValueError, TypeError):
             ts = now
 
-        telemetry = Telemetry(
-            id=generate_cuid(),
-            rov_id=rov_id,
-            session_id=session_id,
-            timestamp=ts,
-            depth=float(rec.get("depth", 0.0)),
-            ph_level=float(rec.get("ph_level", 0.0)),
-            tds_value=float(rec.get("tds_value", 0.0)),
-            dissolved_oxygen=float(rec.get("dissolved_oxygen", 0.0)),
-            water_temp=float(rec.get("water_temp", 0.0)),
-            is_synced=True,
-            created_at=now,
-        )
+        try:
+            telemetry = Telemetry(
+                id=generate_cuid(),
+                rov_id=rov_id,
+                session_id=session_id,
+                timestamp=ts,
+                depth=safe_float(rec.get("depth"), "depth", default=0.0),
+                ph_level=safe_float(rec.get("ph_level"), "ph_level", default=0.0),
+                tds_value=safe_float(rec.get("tds_value"), "tds_value", default=0.0),
+                dissolved_oxygen=safe_float(rec.get("dissolved_oxygen"), "dissolved_oxygen", default=0.0),
+                water_temp=safe_float(rec.get("water_temp"), "water_temp", default=0.0),
+                is_synced=True,
+                created_at=now,
+            )
+        except ValueError as e:
+            logger.warning(f"Skip record rov_id={rov_id}: {e}")
+            skipped += 1
+            continue
+
         db.add(telemetry)
         saved += 1
 
@@ -131,7 +138,7 @@ def sync_telemetry(
 
     return {
         "success": True,
-        "message": f"{saved} telemetry records disimpan, {skipped} dilewati (duplikat)",
+        "message": f"{saved} telemetry records disimpan, {skipped} dilewati (duplikat/invalid)",
         "saved": saved,
         "skipped": skipped,
     }
@@ -201,19 +208,25 @@ def sync_detections(
         except (ValueError, TypeError):
             detected_at = now
 
-        detection = Detection(
-            id=generate_cuid(),
-            rov_id=rov_id,
-            session_id=session_id,
-            telemetry_id=rec.get("telemetry_id"),
-            species_name=rec.get("species_name", "unknown"),
-            confidence=float(rec.get("confidence", 0.0)),
-            depth_at_detection=rec.get("depth_at_detection"),
-            frame_number=rec.get("frame_number"),
-            detected_at=detected_at,
-            is_synced=True,
-            created_at=now,
-        )
+        try:
+            detection = Detection(
+                id=generate_cuid(),
+                rov_id=rov_id,
+                session_id=session_id,
+                telemetry_id=rec.get("telemetry_id"),
+                species_name=rec.get("species_name", "unknown"),
+                confidence=safe_float(rec.get("confidence"), "confidence", default=0.0),
+                depth_at_detection=rec.get("depth_at_detection"),
+                frame_number=rec.get("frame_number"),
+                detected_at=detected_at,
+                is_synced=True,
+                created_at=now,
+            )
+        except ValueError as e:
+            logger.warning(f"Skip record rov_id={rov_id}: {e}")
+            skipped += 1
+            continue
+
         db.add(detection)
         saved += 1
 
@@ -226,7 +239,7 @@ def sync_detections(
 
     return {
         "success": True,
-        "message": f"{saved} detection records disimpan, {skipped} dilewati (duplikat)",
+        "message": f"{saved} detection records disimpan, {skipped} dilewati (duplikat/invalid)",
         "saved": saved,
         "skipped": skipped,
     }
@@ -300,23 +313,29 @@ def sync_auv_status(
         except (ValueError, TypeError):
             ts = now
 
-        auv_status = AUVStatus(
-            id=generate_cuid(),
-            rov_id=rov_id,
-            session_id=session_id,
-            timestamp=ts,
-            roll=float(rec.get("roll", 0.0)),
-            pitch=float(rec.get("pitch", 0.0)),
-            yaw=float(rec.get("yaw", 0.0)),
-            depth=float(rec.get("depth", 0.0)),
-            heading=str(rec.get("heading", "N")),
-            speed=float(rec.get("speed", 0.0)),
-            gyroscope=rec.get("gyroscope"),
-            accelerometer=rec.get("accelerometer"),
-            magnetometer=rec.get("magnetometer"),
-            is_synced=True,
-            created_at=now,
-        )
+        try:
+            auv_status = AUVStatus(
+                id=generate_cuid(),
+                rov_id=rov_id,
+                session_id=session_id,
+                timestamp=ts,
+                roll=safe_float(rec.get("roll"), "roll", default=0.0),
+                pitch=safe_float(rec.get("pitch"), "pitch", default=0.0),
+                yaw=safe_float(rec.get("yaw"), "yaw", default=0.0),
+                depth=safe_float(rec.get("depth"), "depth", default=0.0),
+                heading=str(rec.get("heading", "N")),
+                speed=safe_float(rec.get("speed"), "speed", default=0.0),
+                gyroscope=rec.get("gyroscope"),
+                accelerometer=rec.get("accelerometer"),
+                magnetometer=rec.get("magnetometer"),
+                is_synced=True,
+                created_at=now,
+            )
+        except ValueError as e:
+            logger.warning(f"Skip record rov_id={rov_id}: {e}")
+            skipped += 1
+            continue
+
         db.add(auv_status)
         saved += 1
 
@@ -329,7 +348,7 @@ def sync_auv_status(
 
     return {
         "success": True,
-        "message": f"{saved} auv_status records disimpan, {skipped} dilewati (duplikat)",
+        "message": f"{saved} auv_status records disimpan, {skipped} dilewati (duplikat/invalid)",
         "saved": saved,
         "skipped": skipped,
     }

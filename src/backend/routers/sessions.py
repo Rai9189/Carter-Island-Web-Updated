@@ -280,7 +280,7 @@ def update_session(
     session.end_time   = now
     session.updated_at = now
 
-    location_name = body.get("locationName", "").strip()
+    location_name = (body.get("locationName") or "").strip()
     if location_name:
         session.location_name = location_name
 

@@ -18,6 +18,7 @@ from database.connection import get_db
 from database.models import AUVStatus, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
+from core.validation import safe_float
 
 logger = logging.getLogger("carter-backend")
 
@@ -118,21 +119,24 @@ def save_auv_status(
 
     now = datetime.now(timezone.utc)
 
-    new_status = AUVStatus(
-        id=generate_cuid(),
-        session_id=session_id,
-        timestamp=now,
-        roll=float(body.get("roll", 0.0)),
-        pitch=float(body.get("pitch", 0.0)),
-        yaw=float(body.get("yaw", 0.0)),
-        depth=float(body.get("depth", 0.0)),
-        heading=str(body.get("heading", "N")),
-        speed=float(body.get("speed", 0.0)),
-        gyroscope=body.get("gyroscope"),
-        accelerometer=body.get("accelerometer"),
-        magnetometer=body.get("magnetometer"),
-        created_at=now,
-    )
+    try:
+        new_status = AUVStatus(
+            id=generate_cuid(),
+            session_id=session_id,
+            timestamp=now,
+            roll=safe_float(body.get("roll"), "roll", default=0.0),
+            pitch=safe_float(body.get("pitch"), "pitch", default=0.0),
+            yaw=safe_float(body.get("yaw"), "yaw", default=0.0),
+            depth=safe_float(body.get("depth"), "depth", default=0.0),
+            heading=str(body.get("heading", "N")),
+            speed=safe_float(body.get("speed"), "speed", default=0.0),
+            gyroscope=body.get("gyroscope"),
+            accelerometer=body.get("accelerometer"),
+            magnetometer=body.get("magnetometer"),
+            created_at=now,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     db.add(new_status)
     db.commit()
