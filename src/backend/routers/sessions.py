@@ -136,6 +136,8 @@ def get_sessions(
     Opsional filter by status: Running | Completed | Aborted
     USER biasa cuma lihat sesi miliknya sendiri; ADMIN lihat semua.
     """
+    limit = min(max(limit, 1), 500)
+    page = max(page, 1)
     skip = (page - 1) * limit
     query = db.query(MonitoringSession)
 

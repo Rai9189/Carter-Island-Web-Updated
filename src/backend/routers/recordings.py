@@ -89,6 +89,8 @@ def get_recordings(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
+    limit = min(max(limit, 1), 500)
+    page = max(page, 1)
     skip = (page - 1) * limit
     query = db.query(VideoPath)
 

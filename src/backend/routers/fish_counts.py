@@ -228,6 +228,7 @@ def get_fish_counts_summary(
     GET ringkasan total ikan per spesies dari semua sesi.
     Digunakan halaman Historical untuk overview populasi.
     """
+    limit = min(max(limit, 1), 500)
     summary = (
         db.query(
             FishCount.species_name,
@@ -273,6 +274,8 @@ def get_fish_counts(
     """
     GET list fish counts dengan pagination dan filter opsional.
     """
+    limit = min(max(limit, 1), 500)
+    page  = max(page, 1)
     skip  = (page - 1) * limit
     query = db.query(FishCount)
 

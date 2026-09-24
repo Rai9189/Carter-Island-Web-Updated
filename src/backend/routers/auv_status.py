@@ -65,6 +65,8 @@ def get_auv_status_list(
     """
     GET list data navigasi AUV dengan pagination.
     """
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
     query = db.query(AUVStatus)
 
     if session_id:
