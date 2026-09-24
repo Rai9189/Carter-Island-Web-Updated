@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/users", tags=["Users"])
 def _format_user(user: User) -> dict:
     return {
         "id": user.id,
-        "fullName": user.full_name,
+        "fullName": user.username,
         "email": user.email,
         "phoneNumber": user.phone_number,
         "role": user.role.value,
@@ -68,7 +68,7 @@ def get_users(
     if search:
         query = query.filter(
             or_(
-                User.full_name.contains(search),
+                User.username.contains(search),
                 User.email.contains(search),
             )
         )
@@ -118,13 +118,13 @@ def create_user(
     POST create user baru oleh admin.
     Port dari src/app/api/users/route.ts POST
     """
-    full_name = body.get("fullName", "").strip()
+    username = body.get("fullName", "").strip()
     email = body.get("email", "").strip().lower()
     password = body.get("password", "")
     phone_number = body.get("phoneNumber", "").strip()
     role = body.get("role", "USER")
 
-    if not all([full_name, email, password, phone_number]):
+    if not all([username, email, password, phone_number]):
         raise HTTPException(status_code=400, detail="Semua field wajib diisi")
 
     if role not in ("USER", "ADMIN"):
@@ -137,7 +137,7 @@ def create_user(
     now = datetime.now(timezone.utc)
     new_user = User(
         id=generate_cuid(),
-        full_name=full_name,
+        username=username,
         email=email,
         password=hash_password(password),
         phone_number=phone_number,
@@ -190,13 +190,13 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
 
-    full_name = body.get("fullName", "").strip()
+    username = body.get("fullName", "").strip()
     email = body.get("email", "").strip().lower()
     phone_number = body.get("phoneNumber", "").strip()
     role = body.get("role", user.role.value)
     password = body.get("password", "")
 
-    if not all([full_name, email, phone_number]):
+    if not all([username, email, phone_number]):
         raise HTTPException(
             status_code=400,
             detail="fullName, email, dan phoneNumber wajib diisi"
@@ -211,7 +211,7 @@ def update_user(
         if existing:
             raise HTTPException(status_code=400, detail="Email sudah dipakai")
 
-    user.full_name = full_name
+    user.username = username
     user.email = email
     user.phone_number = phone_number
     user.role = Role(role)
@@ -252,9 +252,9 @@ def delete_user(
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
 
     email = user.email
-    full_name = user.full_name
+    username = user.username
     db.delete(user)
     db.commit()
 
     logger.info(f"User deleted: {user_id} ({email}) by admin: {current_user['email']}")
-    return {"message": f'User "{full_name}" berhasil dihapus'}
+    return {"message": f'User "{username}" berhasil dihapus'}

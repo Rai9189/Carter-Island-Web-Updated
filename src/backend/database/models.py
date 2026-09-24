@@ -22,6 +22,11 @@ Struktur tabel sesuai ERD dokumen C300.02TA2026:
 Perubahan v2 — SPPI 45/46/47 Sync ROV → Base Station:
   - Tambah kolom `rov_id`    di Telemetry, Detection, AUVStatus
   - Tambah kolom `is_synced` di Telemetry, Detection, AUVStatus
+
+Perubahan v3 — Sinkronisasi ERD:
+  - users.full_name      → users.username
+  - fish_counts.total_count  → fish_counts.total_ikan
+  - fish_counts.detected_at  → fish_counts.waktu_deteksi
 """
 
 import enum
@@ -73,7 +78,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(STR191, primary_key=True, default=generate_cuid)
-    full_name: Mapped[str] = mapped_column(STR255, nullable=False)
+    username: Mapped[str] = mapped_column(STR255, nullable=False)           # ← ganti dari full_name
     email: Mapped[str] = mapped_column(STR255, nullable=False, unique=True)
     password: Mapped[str] = mapped_column(STR255, nullable=False)
     phone_number: Mapped[str] = mapped_column(STR50, nullable=False)
@@ -345,8 +350,8 @@ class FishCount(Base):
         nullable=False,
     )
     species_name: Mapped[str] = mapped_column(STR255, nullable=False)
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    detected_at: Mapped[datetime] = mapped_column(
+    total_ikan: Mapped[int] = mapped_column(Integer, nullable=False, default=0)       # ← ganti dari total_count
+    waktu_deteksi: Mapped[datetime] = mapped_column(                                   # ← ganti dari detected_at
         DateTime, nullable=False, server_default=func.now()
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -368,7 +373,7 @@ class FishCount(Base):
     )
 
     def __repr__(self):
-        return f"<FishCount id={self.id} species={self.species_name} total={self.total_count}>"
+        return f"<FishCount id={self.id} species={self.species_name} total={self.total_ikan}>"
 
 
 # ============================================================

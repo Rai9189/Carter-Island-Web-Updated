@@ -81,7 +81,7 @@ def seed():
     else:
         admin = User(
             id=generate_cuid(),
-            full_name='Carter Island Administrator',
+            username='Carter Island Administrator',
             email='admin@carterisland.com',
             password=hash_password('admin123456'),
             phone_number='+62-812-3456-7890',
@@ -98,7 +98,7 @@ def seed():
     else:
         user = User(
             id=generate_cuid(),
-            full_name='Carter Island User',
+            username='Carter Island User',
             email='user@carterisland.com',
             password=hash_password('user123456'),
             phone_number='+62-812-3456-7891',
@@ -214,8 +214,8 @@ def seed():
                 id=generate_cuid(),
                 session_id=session.id,
                 species_name=sp,
-                total_count=cnt,
-                detected_at=start,
+                total_ikan=cnt,
+                waktu_deteksi=start,
                 created_at=start,
                 updated_at=end or now,
             )

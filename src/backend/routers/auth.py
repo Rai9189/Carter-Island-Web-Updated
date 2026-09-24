@@ -21,6 +21,7 @@ from auth.password import hash_password, verify_password
 from auth.jwt import create_access_token, create_refresh_token
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
+from config import JWT_EXPIRE_MINUTES
 from schemas.auth import LoginRequest, RegisterRequest
 
 logger = logging.getLogger("carter-backend")
@@ -35,7 +36,7 @@ def _format_user(user: User) -> dict:
     """Format user object ke dict untuk response."""
     return {
         "id": user.id,
-        "fullName": user.full_name,
+        "fullName": user.username,
         "email": user.email,
         "phoneNumber": user.phone_number,
         "role": user.role.value,
@@ -92,7 +93,7 @@ async def login(
         httponly=True,       # Tidak bisa diakses JavaScript
         samesite="lax",      # Proteksi CSRF
         secure=False,        # Set True kalau sudah pakai HTTPS
-        max_age=60 * 60,     # 1 jam (sama dengan JWT_EXPIRE_MINUTES)
+        max_age=JWT_EXPIRE_MINUTES * 60,  # samakan dengan umur JWT
     )
 
     response.set_cookie(
@@ -149,7 +150,7 @@ async def register(
     # Buat user baru
     new_user = User(
         id=generate_cuid(),
-        full_name=body.fullName,
+        username=body.fullName,
         email=body.email,
         password=hashed_pw,
         phone_number=body.phoneNumber,
