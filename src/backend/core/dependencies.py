@@ -71,7 +71,7 @@ def get_current_user(
 
     Raises:
         HTTPException 401 jika tidak ada token atau token tidak valid
-        HTTPException 404 jika user tidak ditemukan di DB
+        HTTPException 401 jika user tidak ditemukan di DB
     """
     # Extract token
     token = get_token_from_request(credentials, request)
@@ -89,9 +89,11 @@ def get_current_user(
     # Cek user masih ada di DB
     user = db.query(User).filter(User.id == payload["user_id"]).first()
     if not user:
+        # 401 (bukan 404) agar frontend mengakhiri sesi user yang sudah dihapus
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User tidak ditemukan",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return {
