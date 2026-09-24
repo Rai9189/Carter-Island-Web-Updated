@@ -41,7 +41,7 @@ export default function UserDialog({ isOpen, onClose, onSuccess, user, mode }: U
     if (!formData.email.trim()) errs.email = 'Email wajib diisi'
     if (!formData.phoneNumber.trim()) errs.phoneNumber = 'No. telepon wajib diisi'
     if (mode === 'create' && !formData.password.trim()) errs.password = 'Password wajib diisi'
-    if (mode === 'create' && formData.password.length < 8) errs.password = 'Min. 8 karakter'
+    if (formData.password.trim() && formData.password.length < 8) errs.password = 'Min. 8 karakter'
     return errs
   }
 

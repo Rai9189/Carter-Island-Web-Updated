@@ -22,13 +22,21 @@ function getColor(name: string, idx: number) {
   return SPECIES_COLORS[name] || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]
 }
 
-type RangeKey = '7d' | '30d' | '90d' | 'all'
+type RangeKey = '7d' | '30d' | '90d' | 'all' | 'custom'
 const RANGE_OPTIONS: { label: string; key: RangeKey; hours: number }[] = [
   { label: '7 Hari', key: '7d', hours: 168 },
   { label: '30 Hari', key: '30d', hours: 720 },
   { label: '3 Bulan', key: '90d', hours: 2160 },
   { label: 'Semua', key: 'all', hours: 99999 },
 ]
+
+// YYYY-MM-DD dalam waktu lokal (toISOString() memakai UTC → di WIB sebelum jam 07.00 mundur sehari)
+function localDateStr(d: Date) {
+  return d.toLocaleDateString('sv-SE')
+}
+function daysAgoStr(days: number) {
+  const d = new Date(); d.setDate(d.getDate() - days); return localDateStr(d)
+}
 
 function fmtDate(t: string) {
   const d = new Date(t)
@@ -87,14 +95,14 @@ function TrendChart({ title, data, dataKey, color, range, unit, domain }: {
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold text-gray-700">{title}</h3>
-        <span className="text-xs text-gray-400">{range} terakhir</span>
+        <span className="text-xs text-gray-400">{range}</span>
       </div>
       <ResponsiveContainer width="100%" height={160}>
         <LineChart data={data}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
           <XAxis dataKey="date" tickFormatter={fmtAxisDate} tick={{ fontSize: 10 }} />
           <YAxis domain={domain} tick={{ fontSize: 10 }} />
-          <Tooltip formatter={(v: any) => [`${v}${unit ?? ''}`, title]} labelFormatter={fmtAxisDate} />
+          <Tooltip formatter={(v: any) => [`${v}${unit ?? ''}`, title]} labelFormatter={(l: any) => fmtAxisDate(String(l))} />
           <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} />
         </LineChart>
       </ResponsiveContainer>
@@ -104,45 +112,74 @@ function TrendChart({ title, data, dataKey, color, range, unit, domain }: {
 
 export default function HistoricalContent() {
   const [rangeKey, setRangeKey] = useState<RangeKey>('30d')
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().split('T')[0]
-  })
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  // draft = nilai di input tanggal; applied = rentang yang benar-benar dipakai tabel & grafik
+  const [draftFrom, setDraftFrom] = useState(() => daysAgoStr(30))
+  const [draftTo, setDraftTo] = useState(() => localDateStr(new Date()))
+  const [appliedFrom, setAppliedFrom] = useState(draftFrom)
+  const [appliedTo, setAppliedTo] = useState(draftTo)
 
-  const selectedRange = RANGE_OPTIONS.find(r => r.key === rangeKey)!
-  const rangeLabel = selectedRange.label
+  const applyPreset = (key: RangeKey) => {
+    setRangeKey(key)
+    const opt = RANGE_OPTIONS.find(r => r.key === key)
+    if (!opt || key === 'all') return
+    const from = daysAgoStr(opt.hours / 24)
+    const to = localDateStr(new Date())
+    setDraftFrom(from); setDraftTo(to)
+    setAppliedFrom(from); setAppliedTo(to)
+  }
+
+  const applyCustomRange = () => {
+    setRangeKey('custom')
+    setAppliedFrom(draftFrom); setAppliedTo(draftTo)
+  }
+
+  const useDateRange = rangeKey !== 'all'
+  const rangeLabel = rangeKey === 'all'
+    ? 'Semua data'
+    : rangeKey === 'custom'
+      ? `${appliedFrom} s/d ${appliedTo}`
+      : `${RANGE_OPTIONS.find(r => r.key === rangeKey)!.label} terakhir`
 
   // Fetch sessions
   const { data: sessionsData } = useSWR('/api/analytics/sessions', fetcher, { refreshInterval: 60000 })
   const allSessions: any[] = (sessionsData as any)?.data || []
 
-  // Filter sessions by date range
+  // Filter sessions by date range (waktu lokal, sama dengan grafik di bawah)
   const sessions = useMemo(() => {
-    if (rangeKey === 'all') return allSessions
-    const from = new Date(dateFrom).getTime()
-    const to = new Date(dateTo + 'T23:59:59').getTime()
+    if (!useDateRange) return allSessions
+    const from = new Date(`${appliedFrom}T00:00:00`).getTime()
+    const to = new Date(`${appliedTo}T23:59:59`).getTime()
     return allSessions.filter(s => {
       const t = new Date(s.startTime).getTime()
       return t >= from && t <= to
     })
-  }, [allSessions, rangeKey, dateFrom, dateTo])
+  }, [allSessions, useDateRange, appliedFrom, appliedTo])
 
-  // Fetch telemetry analytics
+  // Fetch telemetry analytics — rentang tanggal sama persis dengan tabel
+  const telemetryRangeQuery = useDateRange
+    ? `&from_date=${appliedFrom}T00:00:00&to_date=${appliedTo}T23:59:59`
+    : ''
   const { data: telemetryData } = useSWR(
-    `/api/analytics/telemetry?hours=${selectedRange.hours}`,
-    fetcher, { refreshInterval: 60000 }
-  )
-  const { data: detectionData } = useSWR(
-    `/api/analytics/detections?hours=${selectedRange.hours}`,
+    `/api/analytics/telemetry?hours=99999${telemetryRangeQuery}`,
     fetcher, { refreshInterval: 60000 }
   )
   const { data: fishSummaryData } = useSWR('/api/fish-counts/summary?limit=10', fetcher)
   const { data: allFishCountsData } = useSWR('/api/fish-counts?limit=500', fetcher)
 
   const telemetry = (telemetryData as any)?.data
-  const detections = (detectionData as any)?.data
   const fishSummary = (fishSummaryData as any)?.data
   const allFishCounts: any[] = (allFishCountsData as any)?.data || []
+
+  // Ringkasan ikan per sesi dari data yang sudah diambil (menggantikan 1 request per baris)
+  const fishBySession = useMemo(() => {
+    const map: Record<string, { totalFish: number; speciesCount: number }> = {}
+    allFishCounts.forEach((fc: any) => {
+      const entry = map[fc.sessionId] ??= { totalFish: 0, speciesCount: 0 }
+      entry.totalFish += fc.totalCount || 0
+      entry.speciesCount += 1
+    })
+    return map
+  }, [allFishCounts])
 
   // Build session id → date map for joining fish counts
   const sessionDateMap = useMemo(() => {
@@ -168,8 +205,14 @@ export default function HistoricalContent() {
   // Summary stats
   const avgPh = telemetry?.summary?.avgPh ?? 0
   const avgDo = telemetry?.summary?.avgDo ?? 0
-  const totalFish = fishSummary?.grandTotal ?? 0
   const totalMisi = sessions.length
+
+  const totalFish = useMemo(() => {
+    const activeIds = new Set(sessions.map((s: any) => s.id))
+    return allFishCounts
+      .filter((fc: any) => activeIds.has(fc.sessionId))
+      .reduce((sum: number, fc: any) => sum + (fc.totalCount || 0), 0)
+  }, [sessions, allFishCounts])
 
   // Comparison to previous period (dummy delta for now)
   const prevSessions = allSessions.length - sessions.length
@@ -194,7 +237,7 @@ export default function HistoricalContent() {
 
     return Object.entries(byDate)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, counts]) => ({ date, ...counts }))
+      .map(([date, counts]): Record<string, any> => ({ date, ...counts }))
   }, [sessions, allFishCounts, sessionDateMap])
 
   const speciesKeys = useMemo(() => {
@@ -216,32 +259,24 @@ export default function HistoricalContent() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-3 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">Dari:</span>
-          <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setRangeKey('all') }}
+          <input type="date" value={draftFrom} onChange={e => setDraftFrom(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">Sampai:</span>
-          <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setRangeKey('all') }}
+          <input type="date" value={draftTo} onChange={e => setDraftTo(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
         </div>
         <div className="flex items-center gap-1">
           {RANGE_OPTIONS.map(opt => (
-            <button key={opt.key} onClick={() => {
-              setRangeKey(opt.key)
-              if (opt.key !== 'all') {
-                const d = new Date()
-                setDateTo(d.toISOString().split('T')[0])
-                d.setHours(d.getHours() - opt.hours)
-                setDateFrom(d.toISOString().split('T')[0])
-              }
-            }}
+            <button key={opt.key} onClick={() => applyPreset(opt.key)}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${rangeKey === opt.key ? 'bg-gray-900 text-white' : 'text-gray-500 hover:bg-gray-100'}`}
             >
               {opt.label}
             </button>
           ))}
         </div>
-        <button className="ml-auto px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+        <button onClick={applyCustomRange} className="ml-auto px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
           Terapkan Filter
         </button>
       </div>
@@ -330,7 +365,7 @@ export default function HistoricalContent() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {sessions.length > 0 ? sessions.slice(0, 20).map((s: any) => (
-                <SessionRow key={s.id} session={s} />
+                <SessionRow key={s.id} session={s} fish={fishBySession[s.id] ?? (allFishCountsData ? { totalFish: 0, speciesCount: 0 } : undefined)} />
               )) : (
                 <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-300">Belum ada data misi</td></tr>
               )}
@@ -342,13 +377,9 @@ export default function HistoricalContent() {
   )
 }
 
-// ── Session Row — fetch fish + telemetry per session ────────────────────────
-function SessionRow({ session }: { session: any }) {
-  const { data: fishData } = useSWR(`/api/fish-counts/session/${session.id}`, apiClient.swrFetcher, { revalidateOnFocus: false })
-  const { data: telData } = useSWR(`/api/analytics/telemetry?hours=9999&session_id=${session.id}`, apiClient.swrFetcher, { revalidateOnFocus: false })
-
-  const fish = (fishData as any)?.data
-  const tel = (telData as any)?.data?.summary
+// ── Session Row — data ikan dari parent, rata-rata sensor dari /api/analytics/sessions ──
+function SessionRow({ session, fish }: { session: any; fish?: { totalFish: number; speciesCount: number } }) {
+  const tel = session
 
   const sessionLabel = `session_${session.id.slice(-3)}`
 

@@ -8,7 +8,6 @@ import useSWR from 'swr'
 
 const IFRAME_PREVIEW_URL = process.env.NEXT_PUBLIC_STREAM_PREVIEW_URL || 'http://192.168.2.2:8889/cam/'
 const API_WS_URL = process.env.NEXT_PUBLIC_API_URL?.replace('http', 'ws') || 'ws://localhost:8000'
-const API_HTTP_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const SPECIES_COLORS: Record<string, string> = {
   Kerapu: '#3b82f6',
   Bandeng: '#22c55e',
@@ -168,8 +167,9 @@ export default function StreamComponent() {
   const [perfData, setPerfData] = useState<PerformanceData | null>(null)
   const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null)
 
-  const { data: telemetryData } = useSWR(isStreaming ? '/api/telemetry/latest' : null, apiClient.swrFetcher, { refreshInterval: 2000 })
-  const { data: auvData } = useSWR(isStreaming ? '/api/auv-status/latest' : null, apiClient.swrFetcher, { refreshInterval: 2000 })
+  const liveSessionId = isStreaming ? activeSession?.id : undefined
+  const { data: telemetryData } = useSWR(liveSessionId ? `/api/telemetry/latest?session_id=${liveSessionId}` : null, apiClient.swrFetcher, { refreshInterval: 2000 })
+  const { data: auvData } = useSWR(liveSessionId ? `/api/auv-status/latest?session_id=${liveSessionId}` : null, apiClient.swrFetcher, { refreshInterval: 2000 })
 
   const telemetry = (telemetryData as any)?.data
   const auv = (auvData as any)?.data
@@ -194,8 +194,7 @@ export default function StreamComponent() {
 
   const fetchModelInfo = useCallback(async () => {
     try {
-      const res = await fetch(`${API_HTTP_URL}/api/model-info`)
-      const data = await res.json()
+      const data = await apiClient.get<ModelInfo>('/api/model-info')
       setModelInfo(data)
       addLog(`Model loaded: ${data.model_loaded ? 'Yes' : 'No'}`)
       if (data.device) addLog(`Device: ${data.device}`)
@@ -229,9 +228,19 @@ export default function StreamComponent() {
     }
     const poll = async () => {
       try {
-        const data = await apiClient.get<any>(`/api/fish-counts/session/${activeSession.id}`)
-        if (data?.data?.counts) setSpeciesCounts(data.data.counts)
-        if (data?.data?.logs) setDetectionLogs(data.data.logs.slice(0, 20))
+        const [fishData, detData] = await Promise.all([
+          apiClient.get<any>(`/api/fish-counts/session/${activeSession.id}`),
+          apiClient.get<any>(`/api/detections?session_id=${activeSession.id}&limit=20`),
+        ])
+        if (fishData?.data?.counts) setSpeciesCounts(fishData.data.counts)
+        if (Array.isArray(detData?.data)) {
+          setDetectionLogs(detData.data.map((d: any) => ({
+            time: new Date(d.detectedAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            species: d.speciesName,
+            confidence: d.confidence,
+            frame: d.frameNumber ?? 0,
+          })))
+        }
       } catch {}
     }
     poll()
@@ -243,7 +252,7 @@ export default function StreamComponent() {
   useEffect(() => {
     if (!isStreaming) { if (perfIntervalRef.current) clearInterval(perfIntervalRef.current); return }
     const poll = async () => {
-      try { const res = await fetch(`${API_HTTP_URL}/api/performance`); const d = await res.json(); setPerfData(d) } catch {}
+      try { setPerfData(await apiClient.get<PerformanceData>('/api/performance')) } catch {}
     }
     perfIntervalRef.current = setInterval(poll, 3000)
     return () => { if (perfIntervalRef.current) clearInterval(perfIntervalRef.current) }
@@ -260,7 +269,7 @@ export default function StreamComponent() {
         addLog('WebSocket error')
         if (isRecordingRef.current) {
           addLog('Menghentikan recording karena koneksi error...')
-          try { await fetch(`${API_HTTP_URL}/api/recording/stop/${clientId}`, { method: 'POST' }) } catch {}
+          try { await apiClient.post(`/api/recording/stop/${clientId}`) } catch {}
           setIsRecording(false)
           setRecordingSeconds(0)
           setIsStreaming(false)
@@ -272,7 +281,7 @@ export default function StreamComponent() {
         addLog(`WebSocket closed: ${ev.code}`)
         if (isRecordingRef.current) {
           addLog('Menghentikan recording karena koneksi terputus...')
-          try { await fetch(`${API_HTTP_URL}/api/recording/stop/${clientId}`, { method: 'POST' }) } catch {}
+          try { await apiClient.post(`/api/recording/stop/${clientId}`) } catch {}
           setIsRecording(false)
           setRecordingSeconds(0)
           setIsStreaming(false)
@@ -389,8 +398,7 @@ export default function StreamComponent() {
         // Auto-start recording — tunggu sebentar agar WebRTC sempat handshake
         setTimeout(async () => {
           try {
-            const recRes = await fetch(`${API_HTTP_URL}/api/recording/start/${clientId}`, { method: 'POST' })
-            const recData = await recRes.json()
+            const recData = await apiClient.post<any>(`/api/recording/start/${clientId}`)
             if (recData.success) {
               setIsRecording(true)
               addLog('Recording dimulai otomatis')
@@ -440,7 +448,7 @@ export default function StreamComponent() {
     addLog('Stopping stream...')
 
     if (isRecording) {
-      try { await fetch(`${API_HTTP_URL}/api/recording/stop/${clientId}`, { method: 'POST' }) } catch {}
+      try { await apiClient.post(`/api/recording/stop/${clientId}`) } catch {}
       setIsRecording(false)
     }
 
@@ -485,7 +493,7 @@ export default function StreamComponent() {
   }
 
   const stopRecordingOnly = async () => {
-    try { await fetch(`${API_HTTP_URL}/api/recording/stop/${clientId}`, { method: 'POST' }) } catch {}
+    try { await apiClient.post(`/api/recording/stop/${clientId}`) } catch {}
     setIsRecording(false)
     setRecordingSeconds(0)
     addLog('Recording stopped — stream still running')

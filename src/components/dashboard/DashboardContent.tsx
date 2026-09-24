@@ -3,7 +3,7 @@
 import useSWR from 'swr'
 import { useRouter } from 'next/navigation'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
-import { apiClient } from '@/lib/api-client'
+import { apiClient, isApiStatus } from '@/lib/api-client'
 import {
   Sailboat,
   CalendarDays,
@@ -109,13 +109,13 @@ export default function DashboardContent({ userFullName, userRole }: DashboardCo
   const router = useRouter()
 
   // Coba sesi RUNNING dulu (livestream aktif), fallback ke sesi COMPLETED terakhir
-  const { data: activeSessionData } = useSWR(
+  const { data: activeSessionData, error: activeSessionError } = useSWR(
     '/api/sessions/active',
     fetcher,
     { refreshInterval: 5000, shouldRetryOnError: false, errorRetryCount: 0, revalidateOnFocus: false }
   )
   const hasRunning = !!(activeSessionData as any)?.data
-  const { data: completedSessionData, isLoading: sessionLoading } = useSWR(
+  const { data: completedSessionData, error: completedSessionError, isLoading: sessionLoading } = useSWR(
     hasRunning ? null : '/api/sessions?limit=1&sort=desc&status_filter=Completed',
     fetcher,
     { refreshInterval: 30000, revalidateOnFocus: false }
@@ -128,8 +128,17 @@ export default function DashboardContent({ userFullName, userRole }: DashboardCo
         return Array.isArray(raw) ? raw[0] : raw
       })()
 
-  const { data: telemetryData } = useSWR('/api/telemetry/latest', fetcher, { refreshInterval: 5000, revalidateOnFocus: false })
-  const { data: auvData } = useSWR('/api/auv-status/latest', fetcher, { refreshInterval: 5000, revalidateOnFocus: false })
+  // Telemetri & AUV harus dari sesi yang sama dengan info misi di atas, bukan baris terbaru global
+  const { data: telemetryData } = useSWR(
+    session?.id ? `/api/telemetry/latest?session_id=${session.id}` : null,
+    fetcher,
+    { refreshInterval: 5000, revalidateOnFocus: false }
+  )
+  const { data: auvData } = useSWR(
+    session?.id ? `/api/auv-status/latest?session_id=${session.id}` : null,
+    fetcher,
+    { refreshInterval: 5000, revalidateOnFocus: false }
+  )
   const { data: fishData } = useSWR(
     session?.id ? `/api/fish-counts/session/${session.id}` : null,
     fetcher,
@@ -147,6 +156,23 @@ export default function DashboardContent({ userFullName, userRole }: DashboardCo
           <div className="w-8 h-8 border-2 border-gray-200 border-t-blue-400 rounded-full animate-spin" />
           <p className="text-sm">Memuat data...</p>
         </div>
+      </div>
+    )
+  }
+
+  // Error state — gagal menghubungi server (404 di /sessions/active = memang tidak ada sesi aktif)
+  const sessionFetchFailed = [activeSessionError, completedSessionError]
+    .some(err => err && !isApiStatus(err, 404))
+  if (!session && sessionFetchFailed) {
+    return (
+      <div className="flex flex-col items-center justify-center h-80 text-center">
+        <div className="w-20 h-20 rounded-full bg-blue-50 flex items-center justify-center mb-4">
+          <Anchor className="w-9 h-9 text-blue-300" />
+        </div>
+        <h3 className="text-lg font-semibold text-gray-600 mb-1">Gagal Memuat Data</h3>
+        <p className="text-sm text-gray-400 max-w-xs">
+          Periksa koneksi ke server. Data akan dimuat ulang otomatis.
+        </p>
       </div>
     )
   }
@@ -188,7 +214,7 @@ export default function DashboardContent({ userFullName, userRole }: DashboardCo
   })()
   const lokasi = session.locationName ?? '—'
 
-  const speciesCounts: Array<{speciesName: string; totalCount: number}> = fishRaw?.counts ?? []
+  const speciesCounts: Array<{speciesName: string; totalCount: number}> = Array.isArray(fishRaw?.counts) ? fishRaw.counts : []
   const speciesTotal: number = fishRaw?.totalFish ?? 0
   const speciesChartData = speciesCounts.map(c => ({ name: c.speciesName, value: c.totalCount }))
   const hasSpeciesData = speciesChartData.length > 0

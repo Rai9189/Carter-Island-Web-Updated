@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -69,6 +69,10 @@ const FORMAT_COLORS: Record<string, string> = {
 
 export default function RecordingsTable({ recordings: initialRecordings }: RecordingsTableProps) {
   const [recordings, setRecordings] = useState(initialRecordings)
+
+  useEffect(() => {
+    setRecordings(initialRecordings)
+  }, [initialRecordings])
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [playingVideo, setPlayingVideo] = useState<Recording | null>(null)
   const [search, setSearch] = useState('')
