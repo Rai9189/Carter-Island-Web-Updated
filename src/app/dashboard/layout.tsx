@@ -1,5 +1,6 @@
 import { requireAuth } from '@/lib/auth-utils'
 import Sidebar from '@/components/layout/Sidebar'
+import SWRProvider from '@/components/providers/SWRProvider'
 
 /**
  * PERUBAHAN:
@@ -14,7 +15,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <Sidebar session={session} />
       <div className="dashboard-content">
         <main className="p-0 lg:p-0">
-          {children}
+          <SWRProvider>{children}</SWRProvider>
         </main>
       </div>
     </div>
