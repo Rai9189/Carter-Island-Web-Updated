@@ -142,12 +142,14 @@ async def lifespan(app: FastAPI):
             scheduler.shutdown(wait=False)
             logger.info("Scheduler stopped")
 
-        cleanup_all_recordings()
-
+        # cleanup_all dulu: stop writer thread + simpan recording aktif ke DB,
+        # baru cleanup_all_recordings sebagai jaring pengaman sisa entri
         try:
             await asyncio.wait_for(cleanup_all(), timeout=5.0)
         except asyncio.TimeoutError:
             logger.warning("Cleanup timeout — forcing shutdown")
+
+        cleanup_all_recordings()
 
         inference_executor.shutdown(wait=False)
 

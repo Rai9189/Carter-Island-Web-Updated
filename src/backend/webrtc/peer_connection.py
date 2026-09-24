@@ -123,6 +123,12 @@ async def cleanup_pc(client_id: str):
     if det_track and det_track.recording:
         det_track.stop_recording()
 
+    # Finalize metadata recording + simpan ke video_paths agar tidak jadi orphan
+    # saat client disconnect tanpa sempat memanggil /api/recording/stop
+    from video.recording import is_recording, stop_recording
+    if is_recording(client_id):
+        await stop_recording(client_id)
+
     # Close peer connection
     pc = peer_connections.pop(client_id, None)
     if pc:
