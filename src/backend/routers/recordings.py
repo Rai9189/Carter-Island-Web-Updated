@@ -153,40 +153,46 @@ def delete_recording(
 
 
 # ==========================
-# GET /api/recordings/stream/{filename}
+# GET /api/recordings/stream/{filename} & /download/{filename}
 # ==========================
+def _resolve_recording_file(filename: str, db: Session) -> tuple[str, str]:
+    """
+    Kembalikan (filepath, media_type) untuk file recording yang valid.
+    Hanya file yang tercatat di tabel video_paths yang boleh diakses —
+    RECORDINGS_DIR adalah folder temp sistem, jadi file lain di sana
+    tidak boleh ikut terbuka.
+    """
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Nama file tidak valid")
+
+    if not db.query(VideoPath.id).filter(VideoPath.file_name == filename).first():
+        raise HTTPException(status_code=404, detail="Video tidak ditemukan")
+
+    filepath = os.path.join(RECORDINGS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Video tidak ditemukan")
+
+    media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"
+    return filepath, media_type
+
+
 @router.get("/stream/{filename}")
 def stream_video(
     filename: str,
+    db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Nama file tidak valid")
-
-    filepath = os.path.join(RECORDINGS_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Video tidak ditemukan")
-
-    media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"
+    filepath, media_type = _resolve_recording_file(filename, db)
     return FileResponse(filepath, media_type=media_type, filename=filename)
 
 
-# ==========================
-# GET /api/recordings/download/{filename}
-# ==========================
 @router.get("/download/{filename}")
 def download_video(
     filename: str,
+    db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Nama file tidak valid")
-
-    filepath = os.path.join(RECORDINGS_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Video tidak ditemukan")
-
-    media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"
+    filepath, media_type = _resolve_recording_file(filename, db)
     return FileResponse(
         filepath,
         media_type=media_type,

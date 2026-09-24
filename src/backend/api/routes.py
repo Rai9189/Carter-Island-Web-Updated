@@ -2,11 +2,9 @@
 FastAPI routes for Carter Island Backend
 """
 import json
-import os
 import torch
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from typing import Set
 
 from models.yolo_detector import get_model, get_model_info
@@ -140,55 +138,6 @@ def setup_routes(app: FastAPI):
             "recording": recording,
             "info": info
         }
-
-    @app.get("/api/video/stream/{filename}")
-    async def stream_video(filename: str, _: dict = Depends(get_current_user)):
-        """Stream video file for playback"""
-        from config import RECORDINGS_DIR
-
-        # Security: prevent directory traversal
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
-
-        filepath = os.path.join(RECORDINGS_DIR, filename)
-
-        if not os.path.exists(filepath):
-            raise HTTPException(status_code=404, detail="Video not found")
-
-        # Detect media type based on file extension
-        media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"
-
-        # Return video file with proper content type
-        return FileResponse(
-            filepath,
-            media_type=media_type,
-            filename=filename
-        )
-
-    @app.get("/api/video/download/{filename}")
-    async def download_video(filename: str, _: dict = Depends(get_current_user)):
-        """Download video file"""
-        from config import RECORDINGS_DIR
-
-        # Security: prevent directory traversal
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(status_code=400, detail="Invalid filename")
-
-        filepath = os.path.join(RECORDINGS_DIR, filename)
-
-        if not os.path.exists(filepath):
-            raise HTTPException(status_code=404, detail="Video not found")
-
-        # Detect media type based on file extension
-        media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"
-
-        # Force download with proper headers
-        return FileResponse(
-            filepath,
-            media_type=media_type,
-            filename=filename,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
 
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
