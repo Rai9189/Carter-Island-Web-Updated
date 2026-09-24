@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 from database.connection import get_db
 from database.models import User, Role
 from auth.password import hash_password, verify_password
-from auth.jwt import create_access_token, create_refresh_token
-from core.dependencies import get_current_user
+from auth.jwt import create_access_token
+from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
 from config import JWT_EXPIRE_MINUTES
 from schemas.auth import LoginRequest, RegisterRequest
@@ -80,12 +80,6 @@ async def login(
         role=user.role.value,
     )
 
-    refresh_token = create_refresh_token(
-        user_id=user.id,
-        email=user.email,
-        role=user.role.value,
-    )
-
     # Set httpOnly cookie (lebih aman dari localStorage)
     response.set_cookie(
         key="access_token",
@@ -94,15 +88,6 @@ async def login(
         samesite="lax",      # Proteksi CSRF
         secure=False,        # Set True kalau sudah pakai HTTPS
         max_age=JWT_EXPIRE_MINUTES * 60,  # samakan dengan umur JWT
-    )
-
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=60 * 60 * 24 * 7,  # 7 hari
     )
 
     logger.info(f"User login: {user.email} ({user.role.value})")
@@ -123,9 +108,11 @@ async def login(
 async def register(
     body: RegisterRequest,
     db: Session = Depends(get_db),
+    _: dict = Depends(require_admin),
 ):
     """
-    Registrasi user baru.
+    Registrasi user baru — hanya ADMIN (body boleh berisi role ADMIN,
+    jadi endpoint ini tidak boleh terbuka untuk publik).
     Port dari src/app/api/auth/register/route.ts
 
     Validasi:

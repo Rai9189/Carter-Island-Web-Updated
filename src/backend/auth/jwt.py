@@ -99,6 +99,12 @@ def verify_token(token: str) -> dict:
             logger.warning("Token payload tidak lengkap")
             raise credentials_exception
 
+        # Refresh token lama (berlaku 7 hari, secret sama) tidak boleh dipakai
+        # sebagai access token
+        if payload.get("type") == "refresh":
+            logger.warning("Refresh token ditolak sebagai access token")
+            raise credentials_exception
+
         return {
             "user_id": user_id,
             "email": email,
@@ -108,23 +114,3 @@ def verify_token(token: str) -> dict:
     except JWTError as e:
         logger.warning(f"JWT verification failed: {e}")
         raise credentials_exception
-
-
-# ==========================
-# Refresh token (opsional)
-# ==========================
-def create_refresh_token(user_id: str, email: str, role: str) -> str:
-    """
-    Buat refresh token dengan durasi lebih panjang (7 hari).
-    Dipakai untuk perpanjang sesi tanpa login ulang.
-    """
-    expire = datetime.now(timezone.utc) + timedelta(days=7)
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "role": role,
-        "exp": expire,
-        "iat": datetime.now(timezone.utc),
-        "type": "refresh",
-    }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
