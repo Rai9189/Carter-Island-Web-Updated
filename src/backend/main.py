@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import SAVE_DETECTIONS_ENABLED, SAVE_INTERVAL_SECONDS
 from models.yolo_detector import load_custom_model, get_device_info
 from database.connection import check_db_connection, init_db
-from video.recording import initialize_recordings_dir, cleanup_all_recordings
+from video.recording import cleanup_all_recordings
 from webrtc.peer_connection import cleanup_all
 from api.routes import setup_routes
 from core.scheduler import scheduler, setup_scheduler

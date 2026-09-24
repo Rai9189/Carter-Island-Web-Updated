@@ -21,35 +21,6 @@ logger = logging.getLogger("carter-backend")
 active_recordings: Dict[str, dict] = {}
 
 
-def initialize_recordings_dir():
-    logger.info(f"Recordings will be stored in system temp directory: {RECORDINGS_DIR}")
-
-
-def create_video_writer(recording_id: str) -> Optional[cv2.VideoWriter]:
-    try:
-        filename = f"recording_{recording_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-        filepath = os.path.join(RECORDINGS_DIR, filename)
-
-        fourcc = cv2.VideoWriter.fourcc(*'mp4v')
-        writer = cv2.VideoWriter(
-            filepath,
-            fourcc,
-            10.0,
-            (RESIZE_WIDTH, RESIZE_HEIGHT)
-        )
-
-        if not writer.isOpened():
-            logger.error(f"Failed to open video writer for {filepath}")
-            return None
-
-        logger.info(f"Created video writer: {filepath}")
-        return writer
-
-    except Exception as e:
-        logger.error(f"Error creating video writer: {e}")
-        return None
-
-
 async def start_recording(client_id: str, detection_track) -> Optional[str]:
     if client_id in active_recordings:
         logger.warning(f"Client {client_id} is already recording")

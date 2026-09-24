@@ -18,18 +18,6 @@ from config import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES
 
 
 # ==========================
-# Schema untuk token payload
-# ==========================
-class TokenPayload:
-    """Representasi data yang ada di dalam JWT token."""
-    def __init__(self, sub: str, email: str, role: str, exp: datetime):
-        self.sub = sub        # user ID
-        self.email = email
-        self.role = role
-        self.exp = exp
-
-
-# ==========================
 # Create token
 # ==========================
 def create_access_token(

@@ -1,10 +1,9 @@
 """
 Pydantic schemas untuk endpoint autentikasi.
-Dipakai untuk validasi request body dan format response.
+Dipakai untuk validasi request body.
 """
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
-from datetime import datetime
 
 
 # ==========================
@@ -52,30 +51,3 @@ class RegisterRequest(BaseModel):
             "role": "USER"
         }
     }}
-
-
-# ==========================
-# Response schemas
-# ==========================
-class UserResponse(BaseModel):
-    id: str
-    fullName: str
-    email: str
-    phoneNumber: str
-    role: str
-    createdAt: str
-    updatedAt: str
-
-
-class LoginResponse(BaseModel):
-    success: bool
-    message: str
-    access_token: str
-    token_type: str = "bearer"
-    user: UserResponse
-
-
-class RegisterResponse(BaseModel):
-    success: bool
-    message: str
-    user: UserResponse
