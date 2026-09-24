@@ -62,8 +62,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -240,3 +240,6 @@ src/backend/verify_fase5.py
 
 # graphify knowledge-graph output (generated, local only)
 graphify-out/
+
+# Claude Code personal settings (hooks, local overrides)
+.claude/settings.local.json
