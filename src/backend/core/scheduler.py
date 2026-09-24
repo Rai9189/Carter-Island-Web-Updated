@@ -3,10 +3,13 @@ Background scheduler menggunakan APScheduler.
 
 Job yang berjalan:
   - health_check_job    : tiap 5 detik — cek koneksi ROV & simpan status navigasi
-  - cleanup_job         : tiap hari jam 00:00 WIB — hapus data lama
   - sync_telemetry_job  : tiap X detik — SPPI-45 kirim telemetri ke Base Station
   - sync_detections_job : tiap X detik — SPPI-46 kirim deteksi ke Base Station
   - sync_auv_status_job : tiap X detik — SPPI-47 kirim auv_status ke Base Station
+
+Catatan retensi:
+  - Data misi TIDAK dihapus otomatis (keputusan 2026-09-24). Hapus misi
+    dilakukan manual oleh admin lewat DELETE /api/sessions/{id}.
 
 Catatan sync:
   - Job sync hanya aktif jika BASE_STATION_URL diisi di .env
@@ -15,11 +18,10 @@ Catatan sync:
 """
 import logging
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from config import BASE_STATION_URL, BASE_STATION_SYNC_TOKEN, SYNC_INTERVAL_SECONDS
@@ -134,43 +136,6 @@ async def health_check_job():
 
 
 # ==========================
-# Job 2 — Cleanup data lama tiap hari jam 00:00
-# ==========================
-async def cleanup_job():
-    """
-    Hapus sesi yang sudah Completed/Aborted lebih dari 30 hari
-    beserta semua data anaknya (cascade).
-    """
-    from database.connection import SessionLocal
-    from database.models import MonitoringSession, SessionStatus
-
-    db = SessionLocal()
-    try:
-        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-
-        deleted_sessions = (
-            db.query(MonitoringSession)
-            .filter(
-                MonitoringSession.status.in_([SessionStatus.COMPLETED, SessionStatus.ABORTED]),
-                MonitoringSession.created_at < thirty_days_ago,
-            )
-            .delete(synchronize_session=False)
-        )
-
-        db.commit()
-        logger.info(
-            f"Cleanup selesai — {deleted_sessions} sesi lama dihapus "
-            f"(beserta semua data terkait)"
-        )
-
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Cleanup job error: {e}")
-    finally:
-        db.close()
-
-
-# ==========================
 # Helper — cek status ROV
 # ==========================
 def is_rov_online() -> bool:
@@ -195,18 +160,8 @@ def setup_scheduler():
         misfire_grace_time=10,
     )
 
-    # Job 2 — Cleanup harian
-    scheduler.add_job(
-        cleanup_job,
-        trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Jakarta"),
-        id="daily_cleanup",
-        name="Daily Database Cleanup",
-        replace_existing=True,
-    )
-
     logger.info("Scheduler jobs registered:")
     logger.info("  - health_check_job : tiap 5 detik")
-    logger.info("  - cleanup_job      : tiap hari jam 00:00 WIB")
 
     # Job 3/4/5 — Sync ROV → Base Station (hanya aktif jika dikonfigurasi)
     if BASE_STATION_URL and BASE_STATION_SYNC_TOKEN:

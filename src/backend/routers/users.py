@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from database.connection import get_db
-from database.models import User, Role
+from database.models import User, Role, MonitoringSession
 from auth.password import hash_password
 from core.dependencies import require_admin
 from core.cuid import generate_cuid
@@ -239,7 +239,8 @@ def delete_user(
     """
     DELETE user by ID.
     Port dari src/app/api/users/[id]/route.ts DELETE
-    Cegah self-deletion.
+    Cegah self-deletion. Misi milik user dialihkan ke admin yang menghapus
+    agar data survei tidak ikut terhapus (FK sessions.user_id ON DELETE CASCADE).
     """
     if user_id == current_user["id"]:
         raise HTTPException(
@@ -253,8 +254,22 @@ def delete_user(
 
     email = user.email
     username = user.username
+
+    # Alihkan misi dulu — kalau tidak, cascade di DB ikut menghapus semua
+    # telemetri, deteksi, dan rekaman misi user ini
+    reassigned = (
+        db.query(MonitoringSession)
+        .filter(MonitoringSession.user_id == user_id)
+        .update({MonitoringSession.user_id: current_user["id"]}, synchronize_session=False)
+    )
     db.delete(user)
     db.commit()
 
-    logger.info(f"User deleted: {user_id} ({email}) by admin: {current_user['email']}")
-    return {"message": f'User "{username}" berhasil dihapus'}
+    logger.info(
+        f"User deleted: {user_id} ({email}) by admin: {current_user['email']}, "
+        f"{reassigned} misi dialihkan ke admin tersebut"
+    )
+    message = f'User "{username}" berhasil dihapus'
+    if reassigned:
+        message += f"; {reassigned} misi dialihkan ke akun Anda"
+    return {"message": message, "reassignedSessions": reassigned}
