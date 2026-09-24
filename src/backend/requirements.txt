@@ -79,6 +79,10 @@ python-jose[cryptography]==3.3.0
 
 # Password hashing (kompatibel dengan bcryptjs)
 passlib[bcrypt]==1.7.4
+# passlib 1.7.4 tidak kompatibel dengan bcrypt>=5 (crash saat hash/verify)
+bcrypt==4.0.1
+# dibutuhkan pydantic EmailStr (schemas/auth.py)
+email-validator==2.3.0
 
 # Scheduled jobs (ganti manual cleanup & health check polling)
 APScheduler==3.10.4
