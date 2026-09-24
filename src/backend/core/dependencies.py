@@ -83,7 +83,17 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Verifikasi token
+    return get_user_from_token(token, db)
+
+
+def get_user_from_token(token: str, db: Session) -> dict:
+    """
+    Verifikasi JWT dan pastikan user-nya masih ada di DB.
+    Dipakai get_current_user dan WebSocket (yang tidak bisa pakai Depends HTTP).
+
+    Raises:
+        HTTPException 401 jika token tidak valid atau user tidak ditemukan
+    """
     payload = verify_token(token)
 
     # Cek user masih ada di DB

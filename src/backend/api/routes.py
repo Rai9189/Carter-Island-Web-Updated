@@ -4,7 +4,7 @@ FastAPI routes for Carter Island Backend
 import json
 import torch
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from typing import Set
 
 from models.yolo_detector import get_model, get_model_info
@@ -17,7 +17,8 @@ from webrtc.peer_connection import (
     get_average_fps
 )
 from config import RTSP_URL
-from core.dependencies import get_current_user
+from core.dependencies import get_current_user, get_user_from_token
+from database.connection import SessionLocal
 from core.system_metrics import get_cpu_percent, get_gpu_percent
 
 logger = logging.getLogger("carter-backend")
@@ -142,7 +143,23 @@ def setup_routes(app: FastAPI):
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
         """WebSocket endpoint for WebRTC signaling"""
+        # Wajib login: browser tidak bisa kirim header Authorization di WebSocket,
+        # tapi cookie httpOnly access_token ikut terkirim saat handshake
+        token = websocket.cookies.get("access_token")
+        db = SessionLocal()
+        try:
+            if not token:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+            user = get_user_from_token(token, db)
+        except HTTPException:
+            logger.warning(f"WS client {client_id} ditolak: tidak terautentikasi")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        finally:
+            db.close()
+
         await websocket.accept()
+        logger.info(f"WS client {client_id} diterima untuk {user['email']}")
         active_connections.add(websocket)
         logger.info(f"WS client {client_id} connected")
 
