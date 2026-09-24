@@ -24,15 +24,6 @@ from database.crud.detections import save_detection_to_db  # GANTI: dari databas
 
 logger = logging.getLogger("carter-backend")
 
-# Performance counters
-frame_count = 0
-inference_count = 0
-last_fps_time = time.time()
-last_infer_time = time.time()
-current_fps = 0.0
-current_infer_fps = 0.0
-
-
 class RtspDetectionTrack(VideoStreamTrack):
 
     def __init__(self, video_source_track):
@@ -41,6 +32,15 @@ class RtspDetectionTrack(VideoStreamTrack):
         self.frame_skip = 0
         self.skip_n = 0  # 0 = process every frame
         self.last_dets: List[Tuple[int, int, int, int, float, str]] = []
+
+        # Performance counters per track (bukan global) agar FPS tiap client
+        # tidak saling menjumlah saat ada >1 client terhubung
+        self.frame_count = 0
+        self.inference_count = 0
+        self.last_fps_time = time.time()
+        self.last_infer_time = time.time()
+        self.current_fps = 0.0
+        self.current_infer_fps = 0.0
 
         self.size = (RESIZE_WIDTH, RESIZE_HEIGHT) if (RESIZE_WIDTH and RESIZE_HEIGHT) else None
         self.conf = YOLO_CONF_THRESHOLD
@@ -59,9 +59,6 @@ class RtspDetectionTrack(VideoStreamTrack):
         self.stop_writer_thread = False
 
     async def recv(self) -> VideoFrame:
-        global frame_count, last_fps_time, current_fps
-        global inference_count, last_infer_time, current_infer_fps
-
         frame: VideoFrame = await self.src.recv()
         img = frame.to_ndarray(format="bgr24")
 
@@ -90,12 +87,12 @@ class RtspDetectionTrack(VideoStreamTrack):
             except Exception as e:
                 logger.warning(f"Inference error: {e}")
             finally:
-                inference_count += 1
+                self.inference_count += 1
                 now = time.time()
-                if now - last_infer_time >= 1.0:
-                    current_infer_fps = inference_count / (now - last_infer_time)
-                    inference_count = 0
-                    last_infer_time = now
+                if now - self.last_infer_time >= 1.0:
+                    self.current_infer_fps = self.inference_count / (now - self.last_infer_time)
+                    self.inference_count = 0
+                    self.last_infer_time = now
 
         self.frame_skip += 1
 
@@ -107,17 +104,17 @@ class RtspDetectionTrack(VideoStreamTrack):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         # Performance text
-        frame_count += 1
+        self.frame_count += 1
         now = time.time()
-        if now - last_fps_time >= 1.0:
-            current_fps = frame_count / (now - last_fps_time)
-            frame_count = 0
-            last_fps_time = now
+        if now - self.last_fps_time >= 1.0:
+            self.current_fps = self.frame_count / (now - self.last_fps_time)
+            self.frame_count = 0
+            self.last_fps_time = now
 
         device = get_device_info()
-        cv2.putText(img, f"FPS: {current_fps:.1f}", (10, 30),
+        cv2.putText(img, f"FPS: {self.current_fps:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-        cv2.putText(img, f"Inference: {current_infer_fps:.1f}", (10, 70),
+        cv2.putText(img, f"Inference: {self.current_infer_fps:.1f}", (10, 70),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         cv2.putText(img, f"Device: {device}", (10, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
@@ -200,11 +197,3 @@ class RtspDetectionTrack(VideoStreamTrack):
         self.frame_queue = None
 
         logger.info("Stopped recording video frames")
-
-
-def get_fps() -> float:
-    return current_fps
-
-
-def get_inference_fps() -> float:
-    return current_infer_fps

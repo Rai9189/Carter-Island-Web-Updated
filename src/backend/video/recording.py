@@ -72,13 +72,11 @@ async def start_recording(client_id: str, detection_track) -> Optional[str]:
         actual_session_id = streaming_session_id
 
     try:
-        from video.detection_track import get_fps
-
         recording_id = f"{client_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         filename = f"recording_{recording_id}.webm"
         filepath = os.path.join(RECORDINGS_DIR, filename)
 
-        actual_fps = get_fps()
+        actual_fps = detection_track.current_fps
         if actual_fps <= 0:
             actual_fps = 10.0
 

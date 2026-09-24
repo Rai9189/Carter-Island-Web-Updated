@@ -10,13 +10,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from typing import Set
 
 from models.yolo_detector import get_model, get_model_info
-from video.detection_track import get_fps, get_inference_fps
 from video.recording import start_recording, stop_recording, is_recording, get_recording_info
 from webrtc.peer_connection import (
     handle_offer,
     cleanup_pc,
     get_peer_connections,
-    get_detection_track
+    get_detection_track,
+    get_average_fps
 )
 from config import RTSP_URL
 from core.dependencies import get_current_user
@@ -55,12 +55,13 @@ def setup_routes(app: FastAPI):
                 "mem_reserved": torch.cuda.memory_reserved(0),
             }
 
+        fps, inference_fps = get_average_fps()
         return {
             "status": "healthy",
             "device": get_device_info(),
             "model_info": get_model_info(),
-            "fps": get_fps(),
-            "inference_fps": get_inference_fps(),
+            "fps": fps,
+            "inference_fps": inference_fps,
             "active_peer_connections": len(get_peer_connections()),
             "cuda": torch.cuda.is_available(),
             "torch": torch.__version__,
@@ -71,9 +72,10 @@ def setup_routes(app: FastAPI):
     async def perf(_: dict = Depends(get_current_user)):
         """Performance metrics endpoint"""
         model = get_model()
+        fps, inference_fps = get_average_fps()
         return {
-            "fps": round(get_fps(), 2),
-            "inference_fps": round(get_inference_fps(), 2),
+            "fps": round(fps, 2),
+            "inference_fps": round(inference_fps, 2),
             "active_peer_connections": len(get_peer_connections()),
             "device": get_device_info(),
             "model_loaded": model is not None,

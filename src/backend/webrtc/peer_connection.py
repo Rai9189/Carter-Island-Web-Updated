@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
@@ -166,6 +166,18 @@ def get_peer_connections() -> Dict[str, RTCPeerConnection]:
 
 def get_detection_track(client_id: str) -> Optional[RtspDetectionTrack]:
     return detection_tracks.get(client_id)
+
+
+def get_average_fps() -> Tuple[float, float]:
+    """Rata-rata (fps, inference_fps) dari semua track aktif; (0, 0) jika tidak ada client."""
+    tracks = list(detection_tracks.values())
+    if not tracks:
+        return 0.0, 0.0
+    n = len(tracks)
+    return (
+        sum(t.current_fps for t in tracks) / n,
+        sum(t.current_infer_fps for t in tracks) / n,
+    )
 
 
 async def cleanup_all():
