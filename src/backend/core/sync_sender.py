@@ -41,14 +41,14 @@ async def sync_telemetry_job():
         return
 
     from database.connection import SessionLocal
-    from database.models import Telemetry, MonitoringSession
+    from database.models import Telemetry, MonitoringSession, SessionStatus
 
     db = SessionLocal()
     try:
         # Ambil sesi aktif
         active_session = (
             db.query(MonitoringSession)
-            .filter(MonitoringSession.status == "Running")
+            .filter(MonitoringSession.status == SessionStatus.RUNNING)
             .order_by(MonitoringSession.start_time.desc())
             .first()
         )
@@ -120,13 +120,13 @@ async def sync_detections_job():
         return
 
     from database.connection import SessionLocal
-    from database.models import Detection, MonitoringSession
+    from database.models import Detection, MonitoringSession, SessionStatus
 
     db = SessionLocal()
     try:
         active_session = (
             db.query(MonitoringSession)
-            .filter(MonitoringSession.status == "Running")
+            .filter(MonitoringSession.status == SessionStatus.RUNNING)
             .order_by(MonitoringSession.start_time.desc())
             .first()
         )
@@ -194,13 +194,13 @@ async def sync_auv_status_job():
         return
 
     from database.connection import SessionLocal
-    from database.models import AUVStatus, MonitoringSession
+    from database.models import AUVStatus, MonitoringSession, SessionStatus
 
     db = SessionLocal()
     try:
         active_session = (
             db.query(MonitoringSession)
-            .filter(MonitoringSession.status == "Running")
+            .filter(MonitoringSession.status == SessionStatus.RUNNING)
             .order_by(MonitoringSession.start_time.desc())
             .first()
         )

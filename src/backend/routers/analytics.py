@@ -9,14 +9,14 @@ Perubahan dari versi lama:
                      getAuvStatusAnalytics (SPPI-41/42/43/44)
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database.connection import get_db
-from database.models import Detection, Telemetry, AUVStatus, MonitoringSession
+from database.models import Detection, Telemetry, AUVStatus, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user
 
 logger = logging.getLogger("carter-backend")
@@ -36,7 +36,7 @@ def get_detection_analytics(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = db.query(Detection).filter(Detection.detected_at >= start_time)
 
     if session_id:
@@ -104,7 +104,7 @@ def get_telemetry_analytics(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = db.query(Telemetry).filter(Telemetry.timestamp >= start_time)
 
     if session_id:
@@ -186,7 +186,7 @@ def get_auv_status_analytics(
     db: Session = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    start_time = datetime.utcnow() - timedelta(hours=hours)
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     query = db.query(AUVStatus).filter(AUVStatus.timestamp >= start_time)
 
     if session_id:
@@ -309,7 +309,10 @@ def get_all_sessions(
     query = db.query(MonitoringSession)
 
     if status:
-        query = query.filter(MonitoringSession.status == status)
+        try:
+            query = query.filter(MonitoringSession.status == SessionStatus(status))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Status tidak valid. Gunakan: Running, Completed, atau Aborted")
 
     if sort == "asc":
         query = query.order_by(MonitoringSession.start_time.asc())
@@ -318,9 +321,29 @@ def get_all_sessions(
 
     sessions = query.all()
 
+    # Rata-rata telemetri per sesi dalam 1 query, agar tabel Riwayat Misi
+    # tidak perlu 1 request per baris (N+1)
+    avg_rows = (
+        db.query(
+            Telemetry.session_id,
+            func.avg(Telemetry.ph_level),
+            func.avg(Telemetry.tds_value),
+            func.avg(Telemetry.water_temp),
+            func.avg(Telemetry.dissolved_oxygen),
+        )
+        .group_by(Telemetry.session_id)
+        .all()
+    )
+    _round = lambda v: round(float(v), 2) if v is not None else None
+    avg_map = {
+        sid: {"avgPh": _round(ph), "avgTds": _round(tds), "avgTemp": _round(temp), "avgDo": _round(do)}
+        for sid, ph, tds, temp, do in avg_rows
+    }
+    empty_avg = {"avgPh": None, "avgTds": None, "avgTemp": None, "avgDo": None}
+
     return {
         "success": True,
-        "data": [_format_session(s) for s in sessions],
+        "data": [{**_format_session(s), **avg_map.get(s.id, empty_avg)} for s in sessions],
         "total": len(sessions),
     }
 
@@ -337,4 +360,5 @@ def _format_session(s: MonitoringSession) -> dict:
         "endTime": s.end_time.isoformat() if s.end_time else None,
         "status": s.status.value,
         "createdAt": s.created_at.isoformat(),
+        "updatedAt": s.updated_at.isoformat(),
     }

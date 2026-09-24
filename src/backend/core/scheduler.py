@@ -93,10 +93,10 @@ async def health_check_job():
         attitude = telemetry_data.get("attitude", {})
         compass  = telemetry_data.get("compass", {})
 
-        from database.models import MonitoringSession
+        from database.models import MonitoringSession, SessionStatus
         active_session = (
             db.query(MonitoringSession)
-            .filter(MonitoringSession.status == "Running")
+            .filter(MonitoringSession.status == SessionStatus.RUNNING)
             .order_by(MonitoringSession.start_time.desc())
             .first()
         )
@@ -142,7 +142,7 @@ async def cleanup_job():
     beserta semua data anaknya (cascade).
     """
     from database.connection import SessionLocal
-    from database.models import MonitoringSession
+    from database.models import MonitoringSession, SessionStatus
 
     db = SessionLocal()
     try:
@@ -151,7 +151,7 @@ async def cleanup_job():
         deleted_sessions = (
             db.query(MonitoringSession)
             .filter(
-                MonitoringSession.status.in_(["Completed", "Aborted"]),
+                MonitoringSession.status.in_([SessionStatus.COMPLETED, SessionStatus.ABORTED]),
                 MonitoringSession.created_at < thirty_days_ago,
             )
             .delete(synchronize_session=False)
