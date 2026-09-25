@@ -73,6 +73,9 @@ wheel==0.45.1
 # Database ORM (ganti Prisma)
 sqlalchemy==2.0.41
 pymysql==1.1.1
+# Migrasi skema (dijalankan otomatis saat startup, lihat database/connection.py)
+alembic==1.20.0
+Mako==1.4.3
 
 # JWT Authentication (ganti NextAuth)
 python-jose[cryptography]==3.3.0

@@ -84,15 +84,23 @@ def check_db_connection() -> bool:
 
 def init_db():
     """
-    Buat semua tabel yang belum ada.
-    TIDAK menghapus tabel yang sudah ada (safe untuk data lama).
-    Dipanggil saat startup FastAPI.
+    Terapkan migrasi Alembic sampai revisi terbaru (alembic upgrade head).
+    DB kosong → dibuat lengkap; DB lama → kolom/index diperbaiki tanpa hapus data
+    (lihat alembic/versions). Dipanggil saat startup FastAPI & seed.py.
+
+    Dulu Base.metadata.create_all() — hanya membuat tabel yang belum ada,
+    tidak pernah mengubah tabel lama, jadi DB lama (mis. Jetson) tertinggal.
     """
     try:
-        # Import models agar Base mengetahui semua tabel
-        from database import models  # noqa: F401
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables verified/created")
+        import os
+        from alembic import command
+        from alembic.config import Config
+
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        alembic_cfg = Config(os.path.join(backend_dir, "alembic.ini"))
+        alembic_cfg.attributes["configure_logger"] = False  # jangan timpa logging backend
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database schema up to date (alembic upgrade head)")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
