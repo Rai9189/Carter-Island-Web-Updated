@@ -9,6 +9,7 @@ Alur "store and forward":
   5. ROV tandai data tersebut is_synced=True
 
 Endpoints (dijalankan di BASE STATION):
+  POST /api/sync/sessions     — upsert sesi misi (wajib sebelum data sesi itu diterima)
   POST /api/sync/telemetry    — SPPI-45 syncTelemetry
   POST /api/sync/detections   — SPPI-46 syncDetections
   POST /api/sync/auv-status   — SPPI-47 syncAuvStatus
@@ -21,7 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from database.models import Telemetry, Detection, AUVStatus, MonitoringSession
+from database.models import (
+    Telemetry, Detection, AUVStatus, MonitoringSession, SessionStatus, User, Role,
+)
 from core.dependencies import get_current_user, verify_sync_token
 from core.cuid import generate_cuid
 from core.validation import safe_float
@@ -34,10 +37,109 @@ router = APIRouter(prefix="/api/sync", tags=["Sync"])
 # State sync terakhir (in-memory)
 # ==========================
 _last_sync_info = {
+    "sessions": {"last_synced_at": None, "total_received": 0},
     "telemetry": {"last_synced_at": None, "total_received": 0},
     "detections": {"last_synced_at": None, "total_received": 0},
     "auv_status": {"last_synced_at": None, "total_received": 0},
 }
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+# ==========================
+# POST /api/sync/sessions
+# Sesi misi harus ada di Base Station sebelum datanya (SPPI 45-47) diterima
+# ==========================
+@router.post("/sessions", status_code=status.HTTP_201_CREATED)
+def sync_sessions(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_sync_token),
+):
+    """
+    Buat / perbarui sesi misi dari ROV (upsert, ID sesi sama dengan di ROV).
+
+    Setiap record:
+        id            : str — ID sesi di ROV
+        location_name : str
+        start_time    : str — ISO format
+        end_time      : str — ISO format, opsional
+        status        : str — Running / Completed / Aborted
+        owner_email   : str — pemilik misi di ROV
+
+    User ROV dan Base Station terpisah: pemilik dicocokkan lewat email; kalau
+    tidak ada, sesi dicatat atas nama admin pertama Base Station (keputusan
+    2026-09-25). Pemilik hanya diisi saat sesi pertama kali dibuat.
+    """
+    records: List[dict] = body.get("records", [])
+    if not records:
+        raise HTTPException(status_code=400, detail="records wajib diisi")
+
+    fallback_admin = None
+    saved = 0
+    skipped_ids = []
+    now = datetime.now(timezone.utc)
+
+    for rec in records:
+        session_id = rec.get("id")
+        try:
+            session_status = SessionStatus(rec.get("status"))
+        except ValueError:
+            session_status = None
+        start_time = _parse_dt(rec.get("start_time"))
+
+        if not session_id or not session_status or not start_time:
+            logger.warning(f"Skip sesi {session_id}: id/status/start_time tidak valid")
+            skipped_ids.append(session_id)
+            continue
+
+        session = db.query(MonitoringSession).filter(MonitoringSession.id == session_id).first()
+        if not session:
+            owner = None
+            if rec.get("owner_email"):
+                owner = db.query(User).filter(User.email == rec["owner_email"]).first()
+            if not owner:
+                if fallback_admin is None:
+                    fallback_admin = (
+                        db.query(User).filter(User.role == Role.ADMIN)
+                        .order_by(User.created_at.asc()).first()
+                    )
+                owner = fallback_admin
+            if not owner:
+                logger.warning(f"Skip sesi {session_id}: tidak ada admin di Base Station")
+                skipped_ids.append(session_id)
+                continue
+            session = MonitoringSession(id=session_id, user_id=owner.id, created_at=now)
+            db.add(session)
+
+        session.location_name = rec.get("location_name") or ""
+        session.start_time = start_time
+        session.end_time = _parse_dt(rec.get("end_time"))
+        session.status = session_status
+        session.updated_at = now
+        saved += 1
+
+    db.commit()
+
+    _last_sync_info["sessions"]["last_synced_at"] = now.isoformat()
+    _last_sync_info["sessions"]["total_received"] += saved
+
+    logger.info(f"Sync sessions — saved={saved} skipped={len(skipped_ids)}")
+
+    return {
+        "success": True,
+        "message": f"{saved} sesi disimpan, {len(skipped_ids)} dilewati (invalid)",
+        "saved": saved,
+        "skipped": len(skipped_ids),
+        "skipped_ids": skipped_ids,
+    }
 
 
 # ==========================
@@ -208,12 +310,21 @@ def sync_detections(
         except (ValueError, TypeError):
             detected_at = now
 
+        # telemetry_id dari ROV adalah ID telemetri di DB ROV — cari padanannya
+        # di Base Station lewat rov_id; kalau belum tersync, kosongkan (hindari FK error)
+        telemetry_id = None
+        if rec.get("telemetry_id"):
+            local_telemetry = db.query(Telemetry.id).filter(
+                Telemetry.rov_id == rec["telemetry_id"]
+            ).first()
+            telemetry_id = local_telemetry[0] if local_telemetry else None
+
         try:
             detection = Detection(
                 id=generate_cuid(),
                 rov_id=rov_id,
                 session_id=session_id,
-                telemetry_id=rec.get("telemetry_id"),
+                telemetry_id=telemetry_id,
                 species_name=rec.get("species_name", "unknown"),
                 confidence=safe_float(rec.get("confidence"), "confidence", default=0.0),
                 depth_at_detection=rec.get("depth_at_detection"),

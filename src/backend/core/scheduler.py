@@ -3,6 +3,7 @@ Background scheduler menggunakan APScheduler.
 
 Job yang berjalan:
   - health_check_job    : tiap 5 detik — cek koneksi ROV & simpan status navigasi
+  - sync_sessions_job   : tiap X detik — kirim sesi misi baru/berubah ke Base Station
   - sync_telemetry_job  : tiap X detik — SPPI-45 kirim telemetri ke Base Station
   - sync_detections_job : tiap X detik — SPPI-46 kirim deteksi ke Base Station
   - sync_auv_status_job : tiap X detik — SPPI-47 kirim auv_status ke Base Station
@@ -167,12 +168,22 @@ def setup_scheduler():
     if BASE_STATION_URL and BASE_STATION_SYNC_TOKEN:
         from core.sync_sender import (
             init_sync_sender,
+            sync_sessions_job,
             sync_telemetry_job,
             sync_detections_job,
             sync_auv_status_job,
         )
 
         init_sync_sender(BASE_STATION_URL, BASE_STATION_SYNC_TOKEN)
+
+        scheduler.add_job(
+            sync_sessions_job,
+            trigger=IntervalTrigger(seconds=SYNC_INTERVAL_SECONDS),
+            id="sync_sessions",
+            name="Sync Sessions → Base Station",
+            replace_existing=True,
+            misfire_grace_time=15,
+        )
 
         scheduler.add_job(
             sync_telemetry_job,
@@ -201,6 +212,7 @@ def setup_scheduler():
             misfire_grace_time=15,
         )
 
+        logger.info(f"  - sync_sessions_job   : tiap {SYNC_INTERVAL_SECONDS} detik")
         logger.info(f"  - sync_telemetry_job  : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-45)")
         logger.info(f"  - sync_detections_job : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-46)")
         logger.info(f"  - sync_auv_status_job : tiap {SYNC_INTERVAL_SECONDS} detik (SPPI-47)")

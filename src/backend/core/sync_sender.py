@@ -2,17 +2,20 @@
 Sync sender — dijalankan di sisi ROV (Jetson Orin).
 
 Job ini dipanggil oleh scheduler tiap X detik:
-  1. Cek koneksi ke Base Station
-  2. Ambil data yang belum tersync (is_synced=False)
-  3. Kirim ke endpoint /api/sync/* di Base Station
+  1. Kirim sesi misi (baru / berubah status) ke Base Station
+  2. Ambil data yang belum tersync (is_synced=False) dari SEMUA sesi,
+     bukan hanya sesi Running — sisa data sesi yang sudah selesai ikut terkirim
+  3. Kirim per sesi ke endpoint /api/sync/* di Base Station
   4. Jika berhasil, tandai is_synced=True di DB ROV
+
+Kalau sesi belum sampai di Base Station (404), data sesi itu tetap
+is_synced=False dan dicoba lagi di interval berikutnya.
 
 Diimport dan didaftarkan di core/scheduler.py.
 """
 import logging
 import httpx
-from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("carter-backend")
 
@@ -20,6 +23,12 @@ logger = logging.getLogger("carter-backend")
 BASE_STATION_URL: Optional[str] = None
 BASE_STATION_TOKEN: Optional[str] = None
 SYNC_BATCH_SIZE = 50  # Maksimal record per sekali kirim
+
+# Isi sesi terakhir yang sukses terkirim: {session_id: fingerprint}.
+# Sengaja tidak memakai updated_at — kolom itu diisi campuran UTC (Python)
+# dan jam lokal server (NOW() MySQL), jadi tidak bisa jadi watermark.
+# In-memory: setelah restart semua sesi dikirim ulang sekali (upsert, aman).
+_sent_sessions: Dict[str, Tuple] = {}
 
 
 def init_sync_sender(base_station_url: str, token: str):
@@ -33,232 +42,197 @@ def init_sync_sender(base_station_url: str, token: str):
     logger.info(f"Sync sender initialized — target: {BASE_STATION_URL}")
 
 
-async def sync_telemetry_job():
+async def _post(path: str, payload: dict) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await client.post(
+            f"{BASE_STATION_URL}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {BASE_STATION_TOKEN}"},
+        )
+
+
+def _session_record(s) -> dict:
+    return {
+        "id": s.id,
+        "location_name": s.location_name,
+        "start_time": s.start_time.isoformat() if s.start_time else None,
+        "end_time": s.end_time.isoformat() if s.end_time else None,
+        "status": s.status.value,
+        "owner_email": s.user.email if s.user else None,
+    }
+
+
+async def sync_sessions_job():
     """
-    SPPI-45 syncTelemetry — kirim telemetri yang belum tersync ke Base Station.
+    Kirim sesi misi yang baru / berubah (status, end_time, lokasi) ke Base Station.
+    Data telemetri/deteksi/auv_status butuh sesinya ada dulu di Base Station.
     """
     if not BASE_STATION_URL or not BASE_STATION_TOKEN:
         return
 
     from database.connection import SessionLocal
-    from database.models import Telemetry, MonitoringSession, SessionStatus
+    from database.models import MonitoringSession
 
     db = SessionLocal()
     try:
-        # Ambil sesi aktif
-        active_session = (
-            db.query(MonitoringSession)
-            .filter(MonitoringSession.status == SessionStatus.RUNNING)
-            .order_by(MonitoringSession.start_time.desc())
-            .first()
-        )
-        if not active_session:
-            return
+        changed = []
+        for s in db.query(MonitoringSession).order_by(MonitoringSession.start_time.asc()).all():
+            rec = _session_record(s)
+            fingerprint = tuple(rec.values())
+            if _sent_sessions.get(s.id) != fingerprint:
+                changed.append((rec, fingerprint))
 
-        # Ambil data yang belum tersync
-        unsynced = (
-            db.query(Telemetry)
-            .filter(
-                Telemetry.session_id == active_session.id,
-                Telemetry.is_synced == False,
-            )
-            .order_by(Telemetry.timestamp.asc())
-            .limit(SYNC_BATCH_SIZE)
-            .all()
-        )
+        for start in range(0, len(changed), SYNC_BATCH_SIZE):
+            batch = changed[start:start + SYNC_BATCH_SIZE]
+            response = await _post("/api/sync/sessions", {"records": [r for r, _ in batch]})
+            if response.status_code not in (200, 201):
+                logger.warning(f"Sync sessions gagal — status {response.status_code}")
+                return
 
-        if not unsynced:
-            return
-
-        # Siapkan payload
-        records = [
-            {
-                "rov_id": t.id,
-                "timestamp": t.timestamp.isoformat(),
-                "depth": t.depth,
-                "ph_level": t.ph_level,
-                "tds_value": t.tds_value,
-                "dissolved_oxygen": t.dissolved_oxygen,
-                "water_temp": t.water_temp,
-            }
-            for t in unsynced
-        ]
-
-        # Kirim ke Base Station
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{BASE_STATION_URL}/api/sync/telemetry",
-                json={"session_id": active_session.id, "records": records},
-                headers={"Authorization": f"Bearer {BASE_STATION_TOKEN}"},
-            )
-
-        if response.status_code in (200, 201):
-            # Tandai sudah tersync
-            ids = [t.id for t in unsynced]
-            db.query(Telemetry).filter(Telemetry.id.in_(ids)).update(
-                {"is_synced": True}, synchronize_session=False
-            )
-            db.commit()
-            logger.info(f"Sync telemetry — {len(unsynced)} records dikirim ke Base Station")
-        else:
-            logger.warning(f"Sync telemetry gagal — status {response.status_code}")
+            skipped_ids = set(response.json().get("skipped_ids", []))
+            for rec, fingerprint in batch:
+                if rec["id"] not in skipped_ids:
+                    _sent_sessions[rec["id"]] = fingerprint
+            logger.info(f"Sync sessions — {len(batch) - len(skipped_ids)} sesi dikirim ke Base Station")
 
     except (httpx.ConnectError, httpx.TimeoutException):
-        logger.warning("Sync telemetry — Base Station tidak dapat dijangkau, akan retry")
+        logger.warning("Sync sessions — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
-        db.rollback()
-        logger.error(f"Sync telemetry error: {e}")
+        logger.error(f"Sync sessions error: {e}")
     finally:
         db.close()
+
+
+async def _sync_rows(
+    model, order_col, path: str, label: str, to_record: Callable[[object], dict],
+    ready_filter=None,
+):
+    """
+    Kirim baris is_synced=False dari semua sesi, satu batch per sesi per tick.
+    Satu sesi yang gagal (mis. belum ada di Base Station) tidak menahan sesi lain.
+    ready_filter: syarat tambahan agar baris boleh dikirim sekarang.
+    """
+    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
+        return
+
+    from database.connection import SessionLocal
+
+    db = SessionLocal()
+    try:
+        pending = [model.is_synced == False]
+        if ready_filter is not None:
+            pending.append(ready_filter)
+
+        session_ids = [
+            sid for (sid,) in
+            db.query(model.session_id).filter(*pending).distinct().all()
+        ]
+
+        for session_id in session_ids:
+            unsynced = (
+                db.query(model)
+                .filter(model.session_id == session_id, *pending)
+                .order_by(order_col.asc())
+                .limit(SYNC_BATCH_SIZE)
+                .all()
+            )
+            if not unsynced:
+                continue
+
+            response = await _post(
+                path,
+                {"session_id": session_id, "records": [to_record(r) for r in unsynced]},
+            )
+
+            if response.status_code in (200, 201):
+                ids = [r.id for r in unsynced]
+                db.query(model).filter(model.id.in_(ids)).update(
+                    {"is_synced": True}, synchronize_session=False
+                )
+                db.commit()
+                logger.info(f"Sync {label} — {len(unsynced)} records dikirim ke Base Station")
+            elif response.status_code == 404:
+                logger.info(f"Sync {label} — sesi {session_id[:8]}... belum ada di Base Station, retry nanti")
+            else:
+                logger.warning(f"Sync {label} gagal — status {response.status_code}")
+
+    except (httpx.ConnectError, httpx.TimeoutException):
+        logger.warning(f"Sync {label} — Base Station tidak dapat dijangkau, akan retry")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Sync {label} error: {e}")
+    finally:
+        db.close()
+
+
+async def sync_telemetry_job():
+    """
+    SPPI-45 syncTelemetry — kirim telemetri yang belum tersync ke Base Station.
+    """
+    from database.models import Telemetry
+
+    await _sync_rows(
+        Telemetry, Telemetry.timestamp, "/api/sync/telemetry", "telemetry",
+        lambda t: {
+            "rov_id": t.id,
+            "timestamp": t.timestamp.isoformat(),
+            "depth": t.depth,
+            "ph_level": t.ph_level,
+            "tds_value": t.tds_value,
+            "dissolved_oxygen": t.dissolved_oxygen,
+            "water_temp": t.water_temp,
+        },
+    )
 
 
 async def sync_detections_job():
     """
     SPPI-46 syncDetections — kirim deteksi yang belum tersync ke Base Station.
     """
-    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
-        return
+    from sqlalchemy import or_, select
+    from database.models import Detection, Telemetry
 
-    from database.connection import SessionLocal
-    from database.models import Detection, MonitoringSession, SessionStatus
+    # Tahan deteksi sampai telemetri yang dirujuk sudah sampai di Base Station,
+    # supaya Base Station bisa memetakan telemetry_id (bukan dikosongkan).
+    telemetry_ready = or_(
+        Detection.telemetry_id.is_(None),
+        Detection.telemetry_id.in_(select(Telemetry.id).where(Telemetry.is_synced == True)),
+    )
 
-    db = SessionLocal()
-    try:
-        active_session = (
-            db.query(MonitoringSession)
-            .filter(MonitoringSession.status == SessionStatus.RUNNING)
-            .order_by(MonitoringSession.start_time.desc())
-            .first()
-        )
-        if not active_session:
-            return
-
-        unsynced = (
-            db.query(Detection)
-            .filter(
-                Detection.session_id == active_session.id,
-                Detection.is_synced == False,
-            )
-            .order_by(Detection.detected_at.asc())
-            .limit(SYNC_BATCH_SIZE)
-            .all()
-        )
-
-        if not unsynced:
-            return
-
-        records = [
-            {
-                "rov_id": d.id,
-                "telemetry_id": d.telemetry_id,
-                "species_name": d.species_name,
-                "confidence": d.confidence,
-                "depth_at_detection": d.depth_at_detection,
-                "frame_number": d.frame_number,
-                "detected_at": d.detected_at.isoformat(),
-            }
-            for d in unsynced
-        ]
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{BASE_STATION_URL}/api/sync/detections",
-                json={"session_id": active_session.id, "records": records},
-                headers={"Authorization": f"Bearer {BASE_STATION_TOKEN}"},
-            )
-
-        if response.status_code in (200, 201):
-            ids = [d.id for d in unsynced]
-            db.query(Detection).filter(Detection.id.in_(ids)).update(
-                {"is_synced": True}, synchronize_session=False
-            )
-            db.commit()
-            logger.info(f"Sync detections — {len(unsynced)} records dikirim ke Base Station")
-        else:
-            logger.warning(f"Sync detections gagal — status {response.status_code}")
-
-    except (httpx.ConnectError, httpx.TimeoutException):
-        logger.warning("Sync detections — Base Station tidak dapat dijangkau, akan retry")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Sync detections error: {e}")
-    finally:
-        db.close()
+    await _sync_rows(
+        Detection, Detection.detected_at, "/api/sync/detections", "detections",
+        lambda d: {
+            "rov_id": d.id,
+            "telemetry_id": d.telemetry_id,
+            "species_name": d.species_name,
+            "confidence": d.confidence,
+            "depth_at_detection": d.depth_at_detection,
+            "frame_number": d.frame_number,
+            "detected_at": d.detected_at.isoformat(),
+        },
+        ready_filter=telemetry_ready,
+    )
 
 
 async def sync_auv_status_job():
     """
     SPPI-47 syncAuvStatus — kirim data navigasi yang belum tersync ke Base Station.
     """
-    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
-        return
+    from database.models import AUVStatus
 
-    from database.connection import SessionLocal
-    from database.models import AUVStatus, MonitoringSession, SessionStatus
-
-    db = SessionLocal()
-    try:
-        active_session = (
-            db.query(MonitoringSession)
-            .filter(MonitoringSession.status == SessionStatus.RUNNING)
-            .order_by(MonitoringSession.start_time.desc())
-            .first()
-        )
-        if not active_session:
-            return
-
-        unsynced = (
-            db.query(AUVStatus)
-            .filter(
-                AUVStatus.session_id == active_session.id,
-                AUVStatus.is_synced == False,
-            )
-            .order_by(AUVStatus.timestamp.asc())
-            .limit(SYNC_BATCH_SIZE)
-            .all()
-        )
-
-        if not unsynced:
-            return
-
-        records = [
-            {
-                "rov_id": s.id,
-                "timestamp": s.timestamp.isoformat(),
-                "roll": s.roll,
-                "pitch": s.pitch,
-                "yaw": s.yaw,
-                "depth": s.depth,
-                "heading": s.heading,
-                "speed": s.speed,
-                "gyroscope": s.gyroscope,
-                "accelerometer": s.accelerometer,
-                "magnetometer": s.magnetometer,
-            }
-            for s in unsynced
-        ]
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{BASE_STATION_URL}/api/sync/auv-status",
-                json={"session_id": active_session.id, "records": records},
-                headers={"Authorization": f"Bearer {BASE_STATION_TOKEN}"},
-            )
-
-        if response.status_code in (200, 201):
-            ids = [s.id for s in unsynced]
-            db.query(AUVStatus).filter(AUVStatus.id.in_(ids)).update(
-                {"is_synced": True}, synchronize_session=False
-            )
-            db.commit()
-            logger.info(f"Sync auv_status — {len(unsynced)} records dikirim ke Base Station")
-        else:
-            logger.warning(f"Sync auv_status gagal — status {response.status_code}")
-
-    except (httpx.ConnectError, httpx.TimeoutException):
-        logger.warning("Sync auv_status — Base Station tidak dapat dijangkau, akan retry")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Sync auv_status error: {e}")
-    finally:
-        db.close()
+    await _sync_rows(
+        AUVStatus, AUVStatus.timestamp, "/api/sync/auv-status", "auv_status",
+        lambda s: {
+            "rov_id": s.id,
+            "timestamp": s.timestamp.isoformat(),
+            "roll": s.roll,
+            "pitch": s.pitch,
+            "yaw": s.yaw,
+            "depth": s.depth,
+            "heading": s.heading,
+            "speed": s.speed,
+            "gyroscope": s.gyroscope,
+            "accelerometer": s.accelerometer,
+            "magnetometer": s.magnetometer,
+        },
+    )
