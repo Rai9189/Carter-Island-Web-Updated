@@ -40,6 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Rekaman video misi (RECORDINGS_DIR default)
+src/backend/recordings/
+
 # Python Virtual Environment
 venv/
 env/

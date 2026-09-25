@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from database.connection import get_db
 from database.models import VideoPath, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user, require_admin
-from config import RECORDINGS_DIR
+from config import RECORDINGS_DIR, LEGACY_RECORDINGS_DIR
 
 logger = logging.getLogger("carter-backend")
 
@@ -159,8 +159,9 @@ def _resolve_recording_file(filename: str, db: Session) -> tuple[str, str]:
     """
     Kembalikan (filepath, media_type) untuk file recording yang valid.
     Hanya file yang tercatat di tabel video_paths yang boleh diakses —
-    RECORDINGS_DIR adalah folder temp sistem, jadi file lain di sana
-    tidak boleh ikut terbuka.
+    LEGACY_RECORDINGS_DIR adalah folder temp sistem, jadi file lain di sana
+    tidak boleh ikut terbuka. File dicari di RECORDINGS_DIR dulu, lalu di
+    folder temp lama (rekaman sebelum RECORDINGS_DIR dipindah).
     """
     if ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Nama file tidak valid")
@@ -168,8 +169,12 @@ def _resolve_recording_file(filename: str, db: Session) -> tuple[str, str]:
     if not db.query(VideoPath.id).filter(VideoPath.file_name == filename).first():
         raise HTTPException(status_code=404, detail="Video tidak ditemukan")
 
-    filepath = os.path.join(RECORDINGS_DIR, filename)
-    if not os.path.exists(filepath):
+    filepath = next(
+        (p for p in (os.path.join(d, filename) for d in (RECORDINGS_DIR, LEGACY_RECORDINGS_DIR))
+         if os.path.isfile(p)),
+        None,
+    )
+    if not filepath:
         raise HTTPException(status_code=404, detail="Video tidak ditemukan")
 
     media_type = "video/webm" if filename.endswith(".webm") else "video/mp4"

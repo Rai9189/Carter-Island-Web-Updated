@@ -33,8 +33,17 @@ MIN_DETECTIONS_TO_SAVE = int(os.getenv("MIN_DETECTIONS_TO_SAVE", "1"))
 # ==========================
 # Recording Settings
 # ==========================
+# Folder rekaman video (.webm). Default: src/backend/recordings. Bisa diarahkan
+# ke disk lain lewat .env (mis. SSD eksternal di Jetson); path relatif dihitung
+# dari folder backend, bukan dari folder tempat uvicorn dijalankan.
+# Dulu tempfile.gettempdir() — /tmp dikosongkan saat reboot → rekaman hilang.
 import tempfile
-RECORDINGS_DIR = tempfile.gettempdir()
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+RECORDINGS_DIR = os.path.join(_BACKEND_DIR, os.getenv("RECORDINGS_DIR") or "recordings")
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+# Folder lama — hanya dibaca (fallback putar/unduh rekaman sebelum pindah)
+LEGACY_RECORDINGS_DIR = tempfile.gettempdir()
 
 # ==========================
 # Model Settings
