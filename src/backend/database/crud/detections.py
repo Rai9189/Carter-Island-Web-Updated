@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from database.connection import SessionLocal
 from database.models import Detection
+from database.crud.fish_counts import recompute_fish_counts
 from core.cuid import generate_cuid
 from config import streaming_session_id
 
@@ -94,6 +95,14 @@ async def save_detection_to_db(
             f"Saved {len(detections)} detections to DB "
             f"(frame {frame_number}, session {active_session_id[:8]}...)"
         )
+
+        # Deteksi sudah aman tersimpan; gagal agregasi tidak membatalkannya
+        try:
+            recompute_fish_counts(db, active_session_id)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating fish_counts: {e}")
         return True
 
     except Exception as e:

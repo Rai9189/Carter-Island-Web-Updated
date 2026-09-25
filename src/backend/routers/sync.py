@@ -25,6 +25,7 @@ from database.connection import get_db
 from database.models import (
     Telemetry, Detection, AUVStatus, MonitoringSession, SessionStatus, User, Role,
 )
+from database.crud.fish_counts import recompute_fish_counts
 from core.dependencies import get_current_user, verify_sync_token
 from core.cuid import generate_cuid
 from core.validation import safe_float
@@ -342,6 +343,15 @@ def sync_detections(
         saved += 1
 
     db.commit()
+
+    # fish_counts tidak ikut di-sync — dihitung ulang dari deteksi yang diterima
+    if saved:
+        try:
+            recompute_fish_counts(db, session_id)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating fish_counts sesi {session_id[:8]}...: {e}")
 
     _last_sync_info["detections"]["last_synced_at"] = now.isoformat()
     _last_sync_info["detections"]["total_received"] += saved

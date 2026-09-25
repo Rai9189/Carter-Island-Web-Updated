@@ -32,8 +32,9 @@ router = APIRouter(prefix="/api/fish-counts", tags=["Fish Counts"])
 
 
 # ==========================
-# POST /api/fish-counts — simpan atau update agregasi
-# Dipanggil oleh YOLO setelah selesai deteksi per frame
+# POST /api/fish-counts — simpan atau update agregasi (input manual)
+# YOLO TIDAK memanggil ini: fish_counts dihitung otomatis dari detections
+# (database/crud/fish_counts.py) dan akan menimpa nilai spesies yang juga terdeteksi
 # ==========================
 @router.post("", status_code=status.HTTP_201_CREATED)
 def save_fish_count(
