@@ -68,6 +68,14 @@ else:
     )
 
 # ==========================
+# Zona waktu
+# ==========================
+# DB & API memakai UTC (API mengirim waktu berakhiran 'Z'). APP_TIMEZONE dipakai
+# untuk membaca filter tanggal tanpa zona dari frontend (tanggal lokal user)
+# dan untuk menulis jam di CSV export.
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Jakarta")
+
+# ==========================
 # Akses browser (CORS & cookie)
 # ==========================
 # Origin frontend yang boleh memanggil API & membuka WebSocket, dipisah koma.

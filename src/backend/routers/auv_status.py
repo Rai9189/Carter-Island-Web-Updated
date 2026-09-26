@@ -19,6 +19,7 @@ from database.models import AUVStatus, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 from core.validation import safe_float
+from core.timeutil import iso_utc
 
 logger = logging.getLogger("carter-backend")
 
@@ -154,7 +155,7 @@ def _format_status(s: AUVStatus) -> dict:
     return {
         "id": s.id,
         "sessionId": s.session_id,
-        "timestamp": s.timestamp.isoformat(),
+        "timestamp": iso_utc(s.timestamp),
         "roll": s.roll,
         "pitch": s.pitch,
         "yaw": s.yaw,
@@ -164,5 +165,5 @@ def _format_status(s: AUVStatus) -> dict:
         "gyroscope": s.gyroscope,
         "accelerometer": s.accelerometer,
         "magnetometer": s.magnetometer,
-        "createdAt": s.created_at.isoformat(),
+        "createdAt": iso_utc(s.created_at),
     }

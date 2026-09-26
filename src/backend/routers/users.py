@@ -19,6 +19,7 @@ from auth.password import hash_password
 from core.dependencies import require_admin
 from core.cuid import generate_cuid
 from core.validation import safe_str, check_password
+from core.timeutil import iso_utc
 
 logger = logging.getLogger("carter-backend")
 
@@ -73,8 +74,8 @@ def _format_user(user: User) -> dict:
         "email": user.email,
         "phoneNumber": user.phone_number,
         "role": user.role.value,
-        "createdAt": user.created_at.isoformat(),
-        "updatedAt": user.updated_at.isoformat(),
+        "createdAt": iso_utc(user.created_at),
+        "updatedAt": iso_utc(user.updated_at),
     }
 
 

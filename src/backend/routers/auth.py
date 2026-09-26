@@ -24,6 +24,7 @@ from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
 from core.rate_limit import FailedAttemptLimiter
 from config import JWT_EXPIRE_MINUTES, COOKIE_SECURE
+from core.timeutil import iso_utc
 from schemas.auth import LoginRequest, RegisterRequest
 
 logger = logging.getLogger("carter-backend")
@@ -48,8 +49,8 @@ def _format_user(user: User) -> dict:
         "email": user.email,
         "phoneNumber": user.phone_number,
         "role": user.role.value,
-        "createdAt": user.created_at.isoformat(),
-        "updatedAt": user.updated_at.isoformat(),
+        "createdAt": iso_utc(user.created_at),
+        "updatedAt": iso_utc(user.updated_at),
     }
 
 

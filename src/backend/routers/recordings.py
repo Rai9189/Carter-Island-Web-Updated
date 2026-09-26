@@ -22,6 +22,7 @@ from database.models import VideoPath, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user, require_admin
 from core.validation import safe_str
 from config import RECORDINGS_DIR, LEGACY_RECORDINGS_DIR
+from core.timeutil import iso_utc
 
 logger = logging.getLogger("carter-backend")
 
@@ -222,6 +223,6 @@ def _format_recording(r: VideoPath) -> dict:
         "fileSize": r.file_size,
         "format": r.format,
         "duration": r.duration,
-        "createdAt": r.created_at.isoformat(),
-        "updatedAt": r.updated_at.isoformat(),
+        "createdAt": iso_utc(r.created_at),
+        "updatedAt": iso_utc(r.updated_at),
     }

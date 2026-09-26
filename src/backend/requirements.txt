@@ -45,6 +45,8 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
 python-multipart==0.0.20
 pytz
+# Database zona waktu untuk zoneinfo (core/timeutil.py) — wajib di Windows
+tzdata==2025.3
 PyYAML==6.0.2
 requests==2.32.5
 scipy==1.16.2

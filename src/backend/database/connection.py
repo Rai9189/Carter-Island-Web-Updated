@@ -3,7 +3,7 @@ Database connection configuration menggunakan SQLAlchemy.
 Menggantikan Prisma ORM yang sebelumnya ada di sisi Next.js.
 """
 import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import QueuePool
 
@@ -32,6 +32,18 @@ engine = create_engine(
     pool_recycle=3600,      # Recycle koneksi tiap 1 jam
     echo=False,             # Set True untuk debug SQL query
 )
+
+
+@event.listens_for(engine, "connect")
+def _use_utc(dbapi_conn, _record):
+    """
+    Semua waktu di DB disimpan UTC (kode Python menulis datetime UTC).
+    Tanpa ini NOW()/CURRENT_TIMESTAMP (server_default & onupdate kolom)
+    memakai zona waktu sistem MySQL (mis. WIB) → isi kolom campuran.
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("SET time_zone = '+00:00'")
+    cur.close()
 
 
 # ==========================

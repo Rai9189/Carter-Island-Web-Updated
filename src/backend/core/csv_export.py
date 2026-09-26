@@ -6,10 +6,10 @@ untuk menghindari duplikasi logic StreamingResponse + parsing tanggal.
 """
 import csv
 import io
-from datetime import datetime
 from typing import Optional
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from core.timeutil import parse_local
 
 
 # ==========================
@@ -49,9 +49,9 @@ def parse_date_range(from_str: Optional[str], to_str: Optional[str]) -> tuple:
     from_date = to_date = None
     try:
         if from_str:
-            from_date = datetime.fromisoformat(from_str)
+            from_date = parse_local(from_str)
         if to_str:
-            to_date = datetime.fromisoformat(to_str)
+            to_date = parse_local(to_str)
     except ValueError:
         raise HTTPException(
             status_code=400,

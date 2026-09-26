@@ -19,6 +19,7 @@ from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 from core.csv_export import csv_response, parse_date_range
 from core.validation import safe_str, safe_float
+from core.timeutil import iso_utc, local_str
 
 logger = logging.getLogger("carter-backend")
 
@@ -179,7 +180,7 @@ def export_telemetry(
 
     header = ["id", "sessionId", "timestamp", "phLevel", "tdsValue", "dissolvedOxygen", "waterTemp", "depth", "createdAt"]
     data = [
-        [t.id, t.session_id, t.timestamp.isoformat(), t.ph_level, t.tds_value, t.dissolved_oxygen, t.water_temp, t.depth, t.created_at.isoformat()]
+        [t.id, t.session_id, local_str(t.timestamp), t.ph_level, t.tds_value, t.dissolved_oxygen, t.water_temp, t.depth, local_str(t.created_at)]
         for t in rows
     ]
 
@@ -194,11 +195,11 @@ def _format_telemetry(t: Telemetry) -> dict:
     return {
         "id": t.id,
         "sessionId": t.session_id,
-        "timestamp": t.timestamp.isoformat(),
+        "timestamp": iso_utc(t.timestamp),
         "depth": t.depth,
         "phLevel": t.ph_level,
         "tdsValue": t.tds_value,
         "dissolvedOxygen": t.dissolved_oxygen,
         "waterTemp": t.water_temp,
-        "createdAt": t.created_at.isoformat(),
+        "createdAt": iso_utc(t.created_at),
     }

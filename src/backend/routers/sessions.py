@@ -33,6 +33,7 @@ from database.models import (
 from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
 from core.validation import safe_str
+from core.timeutil import iso_utc
 
 logger = logging.getLogger("carter-backend")
 
@@ -340,9 +341,9 @@ def _format_session(s: MonitoringSession) -> dict:
         "id": s.id,
         "userId": s.user_id,
         "locationName": s.location_name,
-        "startTime": s.start_time.isoformat(),
-        "endTime": s.end_time.isoformat() if s.end_time else None,
+        "startTime": iso_utc(s.start_time),
+        "endTime": iso_utc(s.end_time),
         "status": s.status.value,
-        "createdAt": s.created_at.isoformat(),
-        "updatedAt": s.updated_at.isoformat(),
+        "createdAt": iso_utc(s.created_at),
+        "updatedAt": iso_utc(s.updated_at),
     }

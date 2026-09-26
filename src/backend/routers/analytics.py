@@ -19,6 +19,7 @@ from sqlalchemy import func, literal_column
 from database.connection import get_db
 from database.models import Detection, Telemetry, AUVStatus, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user
+from core.timeutil import iso_utc, parse_local
 
 logger = logging.getLogger("carter-backend")
 
@@ -45,7 +46,7 @@ def get_detection_analytics(
 
     if date:
         try:
-            dt = datetime.fromisoformat(date)
+            dt = parse_local(date)
             conds += [
                 Detection.detected_at >= dt,
                 Detection.detected_at < dt + timedelta(days=1),
@@ -61,8 +62,8 @@ def get_detection_analytics(
         .one()
     )
 
-    # Format jam sama dengan datetime.isoformat() naive: 2026-09-25T10:00:00
-    hour_key = func.date_format(Detection.detected_at, "%Y-%m-%dT%H:00:00")
+    # Jam UTC dengan penanda 'Z' (format sama dengan iso_utc): 2026-09-25T10:00:00Z
+    hour_key = func.date_format(Detection.detected_at, "%Y-%m-%dT%H:00:00Z")
     hourly = (
         db.query(hour_key, func.count(Detection.id))
         .filter(*conds)
@@ -121,13 +122,13 @@ def get_telemetry_analytics(
 
     if from_date:
         try:
-            conds.append(Telemetry.timestamp >= datetime.fromisoformat(from_date))
+            conds.append(Telemetry.timestamp >= parse_local(from_date))
         except ValueError:
             pass
 
     if to_date:
         try:
-            conds.append(Telemetry.timestamp <= datetime.fromisoformat(to_date))
+            conds.append(Telemetry.timestamp <= parse_local(to_date))
         except ValueError:
             pass
 
@@ -211,7 +212,7 @@ def _telemetry_series(db: Session, conds: list, count: int, first_ts, last_ts) -
             .order_by(bucket)
             .all()
         )
-    return [(ts.isoformat(), *vals) for ts, *vals in rows]
+    return [(iso_utc(ts), *vals) for ts, *vals in rows]
 
 
 # ==========================
@@ -254,7 +255,7 @@ def get_auv_status_analytics(
             },
             "attitude": [
                 {
-                    "time": s.timestamp.isoformat(),
+                    "time": iso_utc(s.timestamp),
                     "roll": round(s.roll or 0, 2),
                     "pitch": round(s.pitch or 0, 2),
                     "yaw": round(s.yaw or 0, 2),
@@ -263,7 +264,7 @@ def get_auv_status_analytics(
             ],
             "navigation": [
                 {
-                    "time": s.timestamp.isoformat(),
+                    "time": iso_utc(s.timestamp),
                     "depth": round(s.depth or 0, 2),
                     "speed": round(s.speed or 0, 2),
                     "heading": s.heading or "N",
@@ -289,9 +290,9 @@ def get_sessions_by_date(
     Digunakan untuk mengisi dropdown Misi di halaman Analytics.
     """
     try:
-        dt = datetime.fromisoformat(date)
+        dt = parse_local(date)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan YYYY-MM-DD")
+        raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan YYYY-MM-DD (tanggal lokal)")
 
     sessions = (
         db.query(MonitoringSession)
@@ -398,9 +399,9 @@ def _format_session(s: MonitoringSession) -> dict:
         "id": s.id,
         "userId": s.user_id,
         "locationName": s.location_name,
-        "startTime": s.start_time.isoformat(),
-        "endTime": s.end_time.isoformat() if s.end_time else None,
+        "startTime": iso_utc(s.start_time),
+        "endTime": iso_utc(s.end_time),
         "status": s.status.value,
-        "createdAt": s.created_at.isoformat(),
-        "updatedAt": s.updated_at.isoformat(),
+        "createdAt": iso_utc(s.created_at),
+        "updatedAt": iso_utc(s.updated_at),
     }

@@ -25,6 +25,7 @@ from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 from core.validation import safe_int
 from core.csv_export import csv_response
+from core.timeutil import iso_utc, local_str
 
 logger = logging.getLogger("carter-backend")
 
@@ -325,7 +326,7 @@ def export_fish_counts(
     rows = query.order_by(FishCount.total_ikan.desc()).all()
 
     header = ["speciesName", "totalCount", "detectedAt"]
-    data = [[c.species_name, c.total_ikan, c.waktu_deteksi.isoformat()] for c in rows]
+    data = [[c.species_name, c.total_ikan, local_str(c.waktu_deteksi)] for c in rows]
 
     filename = f"fish_counts_export_{session_id or 'all'}.csv"
     return csv_response(filename, header, data)
@@ -340,7 +341,7 @@ def _format_fish_count(c: FishCount) -> dict:
         "sessionId": c.session_id,
         "speciesName": c.species_name,
         "totalCount": c.total_ikan,
-        "detectedAt": c.waktu_deteksi.isoformat(),
-        "createdAt": c.created_at.isoformat(),
-        "updatedAt": c.updated_at.isoformat(),
+        "detectedAt": iso_utc(c.waktu_deteksi),
+        "createdAt": iso_utc(c.created_at),
+        "updatedAt": iso_utc(c.updated_at),
     }

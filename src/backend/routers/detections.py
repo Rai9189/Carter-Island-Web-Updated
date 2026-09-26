@@ -23,6 +23,7 @@ from database.connection import get_db
 from database.models import Detection
 from core.dependencies import get_current_user
 from core.csv_export import csv_response, parse_date_range
+from core.timeutil import iso_utc, parse_local, local_str
 
 logger = logging.getLogger("carter-backend")
 
@@ -95,11 +96,11 @@ def get_detection_stats(
     try:
         if start_date:
             query = query.filter(
-                Detection.detected_at >= datetime.fromisoformat(start_date)
+                Detection.detected_at >= parse_local(start_date)
             )
         if end_date:
             query = query.filter(
-                Detection.detected_at <= datetime.fromisoformat(end_date)
+                Detection.detected_at <= parse_local(end_date)
             )
     except ValueError:
         raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan ISO 8601 (YYYY-MM-DD)")
@@ -226,7 +227,7 @@ def export_detections(
 
     header = ["id", "sessionId", "telemetryId", "speciesName", "confidence", "depthAtDetection", "frameNumber", "detectedAt", "createdAt"]
     data = [
-        [d.id, d.session_id, d.telemetry_id, d.species_name, d.confidence, d.depth_at_detection, d.frame_number, d.detected_at.isoformat(), d.created_at.isoformat()]
+        [d.id, d.session_id, d.telemetry_id, d.species_name, d.confidence, d.depth_at_detection, d.frame_number, local_str(d.detected_at), local_str(d.created_at)]
         for d in rows
     ]
 
@@ -246,6 +247,6 @@ def _format_detection(d: Detection) -> dict:
         "confidence": d.confidence,
         "depthAtDetection": d.depth_at_detection,
         "frameNumber": d.frame_number,
-        "detectedAt": d.detected_at.isoformat(),
-        "createdAt": d.created_at.isoformat(),
+        "detectedAt": iso_utc(d.detected_at),
+        "createdAt": iso_utc(d.created_at),
     }
