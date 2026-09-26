@@ -78,7 +78,7 @@ alembic==1.20.0
 Mako==1.4.3
 
 # JWT Authentication (ganti NextAuth)
-python-jose[cryptography]==3.3.0
+PyJWT==2.15.0
 
 # Password hashing (kompatibel dengan bcryptjs)
 passlib[bcrypt]==1.7.4

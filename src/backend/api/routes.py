@@ -18,7 +18,7 @@ from webrtc.peer_connection import (
     get_detection_track,
     get_average_fps
 )
-from config import RTSP_URL, CORS_ORIGINS
+from config import CORS_ORIGINS
 from core.dependencies import get_current_user, get_user_from_token
 from database.connection import SessionLocal
 from core.system_metrics import get_cpu_percent, get_gpu_percent
@@ -41,32 +41,20 @@ def setup_routes(app: FastAPI):
             "device": get_device_info(),
             "cuda_available": torch.cuda.is_available(),
             "model_loaded": model is not None,
-            "rtsp_url": RTSP_URL,
         }
 
     @app.get("/api/health")
     async def health():
-        """Health check endpoint with GPU info"""
-        gpu = {}
-        if torch.cuda.is_available():
-            gpu = {
-                "gpu_name": torch.cuda.get_device_name(0),
-                "mem_total": torch.cuda.get_device_properties(0).total_memory,
-                "mem_alloc": torch.cuda.memory_allocated(0),
-                "mem_reserved": torch.cuda.memory_reserved(0),
-            }
-
+        """
+        Health check publik (tanpa login) untuk monitoring — sengaja ringkas.
+        Detail GPU/versi/model ada di /api/performance & /api/model-info (wajib login).
+        """
         fps, inference_fps = get_average_fps()
         return {
             "status": "healthy",
-            "device": get_device_info(),
-            "model_info": get_model_info(),
+            "model_loaded": get_model() is not None,
             "fps": fps,
             "inference_fps": inference_fps,
-            "active_peer_connections": len(get_peer_connections()),
-            "cuda": torch.cuda.is_available(),
-            "torch": torch.__version__,
-            "gpu": gpu,
         }
 
     @app.get("/api/performance")

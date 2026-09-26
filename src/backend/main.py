@@ -6,7 +6,6 @@ import sys
 import threading
 import torch
 from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
 
 # Fix Ctrl+C di Windows — event loop default Windows tidak handle SIGINT dengan benar
 if sys.platform == "win32":
@@ -44,11 +43,6 @@ from routers.sync import router as sync_router
 # ==========================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("carter-backend")
-
-# ==========================
-# Global Resources
-# ==========================
-inference_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def _install_force_exit_handler(timeout: int = 8):
@@ -151,8 +145,6 @@ async def lifespan(app: FastAPI):
             logger.warning("Cleanup timeout — forcing shutdown")
 
         cleanup_all_recordings()
-
-        inference_executor.shutdown(wait=False)
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

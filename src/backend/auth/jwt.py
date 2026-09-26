@@ -1,5 +1,6 @@
 """
-JWT utility menggunakan python-jose.
+JWT utility menggunakan PyJWT (pengganti python-jose yang tidak terawat;
+format token HS256 sama, token lama tetap valid).
 
 Menggantikan NextAuth.js untuk autentikasi.
 Token disimpan di frontend sebagai httpOnly cookie.
@@ -8,7 +9,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import JWTError, jwt
+import jwt
 from fastapi import HTTPException, status
 
 logger = logging.getLogger("carter-backend")
@@ -117,6 +118,6 @@ def verify_token(token: str) -> dict:
             "role": role,
         }
 
-    except JWTError as e:
+    except jwt.PyJWTError as e:
         logger.warning(f"JWT verification failed: {e}")
         raise credentials_exception
