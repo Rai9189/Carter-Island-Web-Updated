@@ -10,6 +10,7 @@ Endpoint:
   GET  /api/auth/me       → data user yang sedang login
 """
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
@@ -21,12 +22,19 @@ from auth.password import hash_password, verify_password
 from auth.jwt import create_access_token
 from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
+from core.rate_limit import FailedAttemptLimiter
 from config import JWT_EXPIRE_MINUTES
 from schemas.auth import LoginRequest, RegisterRequest
 
 logger = logging.getLogger("carter-backend")
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+# Batas login gagal. Kunci email+IP (bukan email saja) supaya penyerang
+# tidak bisa mengunci akun operator dari komputer lain.
+LOGIN_WINDOW_SECONDS = 15 * 60
+login_limiter_account = FailedAttemptLimiter(5, LOGIN_WINDOW_SECONDS)   # per email+IP
+login_limiter_ip = FailedAttemptLimiter(20, LOGIN_WINDOW_SECONDS)       # per IP
 
 
 # ==========================
@@ -51,6 +59,7 @@ def _format_user(user: User) -> dict:
 @router.post("/login")
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ):
@@ -61,17 +70,43 @@ async def login(
     - Verifikasi email + password
     - Kompatibel dengan hash bcryptjs dari user lama
     - Return token di body DAN set httpOnly cookie
+    - Rate limit login gagal: 5x per email+IP / 20x per IP dalam 15 menit
+      → 429 + Retry-After (password tidak dicek selama terkunci)
     """
+    ip = request.client.host if request.client else "unknown"
+    account_key = f"{ip}|{body.email.lower()}"
+
+    wait = max(
+        login_limiter_account.retry_after(account_key),
+        login_limiter_ip.retry_after(ip),
+    )
+    if wait:
+        logger.warning(f"Login diblokir sementara: {body.email} dari {ip} ({wait}s)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Terlalu banyak percobaan login gagal. "
+                f"Coba lagi dalam {math.ceil(wait / 60)} menit."
+            ),
+            headers={"Retry-After": str(wait)},
+        )
+
     # Cari user berdasarkan email
     user = db.query(User).filter(User.email == body.email).first()
 
     # Cek user ada dan password cocok
     # verify_password kompatibel dengan hash bcryptjs
     if not user or not verify_password(body.password, user.password):
+        login_limiter_account.record_failure(account_key)
+        login_limiter_ip.record_failure(ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email atau password salah",
         )
+
+    # Hitungan per IP sengaja tidak direset: satu akun valid tidak boleh
+    # "mencuci" percobaan gagal ke email lain dari IP yang sama.
+    login_limiter_account.reset(account_key)
 
     # Buat JWT token
     access_token = create_access_token(
