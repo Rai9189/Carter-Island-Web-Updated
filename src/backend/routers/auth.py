@@ -57,7 +57,7 @@ def _format_user(user: User) -> dict:
 # POST /api/auth/login
 # ==========================
 @router.post("/login")
-async def login(
+def login(
     body: LoginRequest,
     request: Request,
     response: Response,
@@ -141,7 +141,7 @@ async def login(
 # POST /api/auth/register
 # ==========================
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(
+def register(
     body: RegisterRequest,
     db: Session = Depends(get_db),
     _: dict = Depends(require_admin),

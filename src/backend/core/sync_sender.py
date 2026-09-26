@@ -13,6 +13,7 @@ is_synced=False dan dicoba lagi di interval berikutnya.
 
 Diimport dan didaftarkan di core/scheduler.py.
 """
+import asyncio
 import logging
 import httpx
 from typing import Callable, Dict, Optional, Tuple
@@ -62,14 +63,8 @@ def _session_record(s) -> dict:
     }
 
 
-async def sync_sessions_job():
-    """
-    Kirim sesi misi yang baru / berubah (status, end_time, lokasi) ke Base Station.
-    Data telemetri/deteksi/auv_status butuh sesinya ada dulu di Base Station.
-    """
-    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
-        return
-
+def _load_changed_sessions() -> list:
+    """Sesi yang isinya berubah sejak terakhir terkirim (sinkron, jalan di thread)."""
     from database.connection import SessionLocal
     from database.models import MonitoringSession
 
@@ -77,10 +72,26 @@ async def sync_sessions_job():
     try:
         changed = []
         for s in db.query(MonitoringSession).order_by(MonitoringSession.start_time.asc()).all():
-            rec = _session_record(s)
+            rec = _session_record(s)  # baca s.user di sini, sebelum sesi DB ditutup
             fingerprint = tuple(rec.values())
             if _sent_sessions.get(s.id) != fingerprint:
                 changed.append((rec, fingerprint))
+        return changed
+    finally:
+        db.close()
+
+
+async def sync_sessions_job():
+    """
+    Kirim sesi misi yang baru / berubah (status, end_time, lokasi) ke Base Station.
+    Data telemetri/deteksi/auv_status butuh sesinya ada dulu di Base Station.
+    Query DB jalan di thread agar tidak memblokir event loop.
+    """
+    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
+        return
+
+    try:
+        changed = await asyncio.to_thread(_load_changed_sessions)
 
         for start in range(0, len(changed), SYNC_BATCH_SIZE):
             batch = changed[start:start + SYNC_BATCH_SIZE]
@@ -99,22 +110,13 @@ async def sync_sessions_job():
         logger.warning("Sync sessions — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
         logger.error(f"Sync sessions error: {e}")
-    finally:
-        db.close()
 
 
-async def _sync_rows(
-    model, order_col, path: str, label: str, to_record: Callable[[object], dict],
-    ready_filter=None,
-):
+def _load_pending_batches(model, order_col, to_record, ready_filter) -> list:
     """
-    Kirim baris is_synced=False dari semua sesi, satu batch per sesi per tick.
-    Satu sesi yang gagal (mis. belum ada di Base Station) tidak menahan sesi lain.
-    ready_filter: syarat tambahan agar baris boleh dikirim sekarang.
+    Satu batch baris is_synced=False per sesi (sinkron, jalan di thread).
+    Return list (session_id, ids, records).
     """
-    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
-        return
-
     from database.connection import SessionLocal
 
     db = SessionLocal()
@@ -128,6 +130,7 @@ async def _sync_rows(
             db.query(model.session_id).filter(*pending).distinct().all()
         ]
 
+        batches = []
         for session_id in session_ids:
             unsynced = (
                 db.query(model)
@@ -136,21 +139,57 @@ async def _sync_rows(
                 .limit(SYNC_BATCH_SIZE)
                 .all()
             )
-            if not unsynced:
-                continue
+            if unsynced:
+                batches.append((
+                    session_id,
+                    [r.id for r in unsynced],
+                    [to_record(r) for r in unsynced],
+                ))
+        return batches
+    finally:
+        db.close()
 
-            response = await _post(
-                path,
-                {"session_id": session_id, "records": [to_record(r) for r in unsynced]},
-            )
+
+def _mark_synced(model, ids: list) -> None:
+    from database.connection import SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.query(model).filter(model.id.in_(ids)).update(
+            {"is_synced": True}, synchronize_session=False
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+async def _sync_rows(
+    model, order_col, path: str, label: str, to_record: Callable[[object], dict],
+    ready_filter=None,
+):
+    """
+    Kirim baris is_synced=False dari semua sesi, satu batch per sesi per tick.
+    Satu sesi yang gagal (mis. belum ada di Base Station) tidak menahan sesi lain.
+    ready_filter: syarat tambahan agar baris boleh dikirim sekarang.
+    Query DB jalan di thread; hanya HTTP yang di event loop.
+    """
+    if not BASE_STATION_URL or not BASE_STATION_TOKEN:
+        return
+
+    try:
+        batches = await asyncio.to_thread(
+            _load_pending_batches, model, order_col, to_record, ready_filter
+        )
+
+        for session_id, ids, records in batches:
+            response = await _post(path, {"session_id": session_id, "records": records})
 
             if response.status_code in (200, 201):
-                ids = [r.id for r in unsynced]
-                db.query(model).filter(model.id.in_(ids)).update(
-                    {"is_synced": True}, synchronize_session=False
-                )
-                db.commit()
-                logger.info(f"Sync {label} — {len(unsynced)} records dikirim ke Base Station")
+                await asyncio.to_thread(_mark_synced, model, ids)
+                logger.info(f"Sync {label} — {len(ids)} records dikirim ke Base Station")
             elif response.status_code == 404:
                 logger.info(f"Sync {label} — sesi {session_id[:8]}... belum ada di Base Station, retry nanti")
             else:
@@ -159,10 +198,7 @@ async def _sync_rows(
     except (httpx.ConnectError, httpx.TimeoutException):
         logger.warning(f"Sync {label} — Base Station tidak dapat dijangkau, akan retry")
     except Exception as e:
-        db.rollback()
         logger.error(f"Sync {label} error: {e}")
-    finally:
-        db.close()
 
 
 async def sync_telemetry_job():

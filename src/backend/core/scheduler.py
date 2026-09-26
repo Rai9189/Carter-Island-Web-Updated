@@ -86,10 +86,6 @@ async def health_check_job():
     """
     global _is_rov_online
 
-    from database.connection import SessionLocal
-    from database.models import AUVStatus, Telemetry
-    from core.cuid import generate_cuid
-
     telemetry_data = None
     is_online = False
 
@@ -130,6 +126,16 @@ async def health_check_job():
     water_quality = _read_water_quality(telemetry_data)
     if not has_navigation and water_quality is None:
         return
+
+    # Simpan di thread agar query DB tidak memblokir event loop (video, API)
+    await asyncio.to_thread(_save_health_data, telemetry_data, has_navigation, water_quality)
+
+
+def _save_health_data(telemetry_data: dict, has_navigation: bool, water_quality) -> None:
+    """Simpan AUVStatus/Telemetry health check ke sesi RUNNING (sinkron, jalan di thread)."""
+    from database.connection import SessionLocal
+    from database.models import AUVStatus, Telemetry
+    from core.cuid import generate_cuid
 
     db = SessionLocal()
     try:

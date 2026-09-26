@@ -16,6 +16,7 @@ Perubahan dari versi lama:
     - Tambah field format (mp4/webm)
     - session_id sekarang FK ke monitoring_sessions
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -53,6 +54,15 @@ async def save_recording_to_db(
     Returns:
         ID VideoPath yang baru dibuat, atau None jika gagal
     """
+    # Kerja DB di thread agar tidak memblokir event loop
+    return await asyncio.to_thread(
+        _save_recording_sync, session_id, filename, filepath, file_size, duration,
+    )
+
+
+def _save_recording_sync(
+    session_id: str, filename: str, filepath: str, file_size: int, duration: float,
+) -> Optional[str]:
     db = SessionLocal()
     try:
         video_path_id = generate_cuid()

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import cv2
 import logging
@@ -21,23 +22,28 @@ logger = logging.getLogger("carter-backend")
 active_recordings: Dict[str, dict] = {}
 
 
+def _active_session_id() -> str:
+    from database.connection import SessionLocal
+    from database.models import MonitoringSession, SessionStatus
+    db = SessionLocal()
+    try:
+        s = db.query(MonitoringSession).filter(
+            MonitoringSession.status == SessionStatus.RUNNING
+        ).order_by(MonitoringSession.start_time.desc()).first()
+        return s.id if s else streaming_session_id
+    finally:
+        db.close()
+
+
 async def start_recording(client_id: str, detection_track) -> Optional[str]:
     if client_id in active_recordings:
         logger.warning(f"Client {client_id} is already recording")
         return None
 
-    # Ambil session aktif dari DB; fallback ke streaming_session_id jika tidak ada
+    # Ambil session aktif dari DB (di thread, tidak memblokir event loop);
+    # fallback ke streaming_session_id jika tidak ada
     try:
-        from database.connection import SessionLocal
-        from database.models import MonitoringSession, SessionStatus
-        _db = SessionLocal()
-        try:
-            _s = _db.query(MonitoringSession).filter(
-                MonitoringSession.status == SessionStatus.RUNNING
-            ).order_by(MonitoringSession.start_time.desc()).first()
-            actual_session_id = _s.id if _s else streaming_session_id
-        finally:
-            _db.close()
+        actual_session_id = await asyncio.to_thread(_active_session_id)
     except Exception as _e:
         logger.warning(f"Could not get active session from DB: {_e}")
         actual_session_id = streaming_session_id

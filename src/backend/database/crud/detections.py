@@ -15,6 +15,7 @@ Perubahan dari versi lama:
     - Tambah field species_name, depth_at_detection
     - session_id sekarang FK ke monitoring_sessions
 """
+import asyncio
 import logging
 from typing import List, Tuple, Optional
 from datetime import datetime, timezone
@@ -29,6 +30,24 @@ logger = logging.getLogger("carter-backend")
 
 
 async def save_detection_to_db(
+    detections: List[Tuple[int, int, int, int, float, str]],
+    frame_number: Optional[int] = None,
+    session_id: Optional[str] = None,
+    telemetry_id: Optional[str] = None,
+    depth_at_detection: Optional[float] = None,
+) -> bool:
+    """
+    Versi async untuk dipanggil dari loop video: kerja DB (termasuk
+    recompute_fish_counts yang makin berat seiring misi) dijalankan di thread
+    agar tidak memblokir event loop (frame video, API, scheduler).
+    """
+    return await asyncio.to_thread(
+        _save_detections_sync,
+        detections, frame_number, session_id, telemetry_id, depth_at_detection,
+    )
+
+
+def _save_detections_sync(
     detections: List[Tuple[int, int, int, int, float, str]],
     frame_number: Optional[int] = None,
     session_id: Optional[str] = None,
