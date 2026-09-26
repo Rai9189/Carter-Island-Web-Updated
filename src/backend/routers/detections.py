@@ -23,6 +23,7 @@ from database.connection import get_db
 from database.models import Detection
 from core.dependencies import get_current_user
 from core.csv_export import csv_response, parse_date_range
+from core.validation import LIST_MAX_LIMIT
 from core.timeutil import iso_utc, parse_local, local_str
 
 logger = logging.getLogger("carter-backend")
@@ -45,6 +46,8 @@ def get_detections(
     """
     GET list deteksi dengan pagination + filter.
     """
+    limit = min(max(limit, 1), LIST_MAX_LIMIT)
+    page = max(page, 1)
     skip = (page - 1) * limit
     query = db.query(Detection)
 

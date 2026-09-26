@@ -18,7 +18,7 @@ from database.models import Telemetry, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 from core.csv_export import csv_response, parse_date_range
-from core.validation import safe_str, safe_float
+from core.validation import safe_str, safe_float, LIST_MAX_LIMIT
 from core.timeutil import iso_utc, local_str
 
 logger = logging.getLogger("carter-backend")
@@ -66,6 +66,8 @@ def get_telemetry_list(
     """
     GET list data kualitas air dengan pagination.
     """
+    limit = min(max(limit, 1), LIST_MAX_LIMIT)
+    offset = max(offset, 0)
     query = db.query(Telemetry)
 
     if session_id:

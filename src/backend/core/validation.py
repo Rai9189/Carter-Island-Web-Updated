@@ -12,6 +12,11 @@ from typing import Any, Optional
 # Berlaku saat password dibuat/diganti (register, admin create/update user).
 PASSWORD_MIN_LENGTH = 8
 
+# Batas atas `limit` list /api/detections & /api/telemetry. Sengaja longgar:
+# Download CSV di Analytics mengambil semua baris satu misi lewat limit=total
+# (misi 3 jam bisa puluhan ribu deteksi) — batas rendah memotong CSV diam-diam.
+LIST_MAX_LIMIT = 100_000
+
 
 def safe_str(value: Any, field_name: str) -> str:
     """Parse value ke string ter-strip. None -> "" (caller cek wajib/tidak)."""
