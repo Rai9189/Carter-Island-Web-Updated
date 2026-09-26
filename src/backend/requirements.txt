@@ -55,6 +55,12 @@ six==1.17.0
 sniffio==1.3.1
 starlette==0.47.3
 sympy==1.14.0
+# torch generik (CPU di Windows/Linux x86). Varian per mesin:
+# - Laptop dev dengan GPU NVIDIA (CUDA 12.6), setelah install requirements:
+#     pip install --force-reinstall --no-deps torch==2.7.1+cu126 torchvision==0.22.1+cu126 torchaudio==2.7.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+#   Kembali ke CPU: ganti cu126 → cpu pada perintah di atas.
+# - Jetson Orin: JANGAN dari PyPI — pasang wheel torch/torchvision untuk JetPack dari NVIDIA.
+# Backend otomatis memakai GPU bila torch.cuda.is_available() (models/yolo_detector.py).
 torch==2.7.1
 torchaudio==2.7.1
 torchvision==0.22.1
