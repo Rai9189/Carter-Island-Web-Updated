@@ -9,11 +9,12 @@ Perubahan dari versi lama:
                      getAuvStatusAnalytics (SPPI-41/42/43/44)
 """
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, literal_column
 
 from database.connection import get_db
 from database.models import Detection, Telemetry, AUVStatus, MonitoringSession, SessionStatus
@@ -37,38 +38,46 @@ def get_detection_analytics(
     _: dict = Depends(get_current_user),
 ):
     start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-    query = db.query(Detection).filter(Detection.detected_at >= start_time)
+    conds = [Detection.detected_at >= start_time]
 
     if session_id:
-        query = query.filter(Detection.session_id == session_id)
+        conds.append(Detection.session_id == session_id)
 
     if date:
         try:
             dt = datetime.fromisoformat(date)
-            query = query.filter(
+            conds += [
                 Detection.detected_at >= dt,
                 Detection.detected_at < dt + timedelta(days=1),
-            )
+            ]
         except ValueError:
             pass
 
-    detections = query.order_by(Detection.detected_at.asc()).all()
+    # Semua agregasi di SQL — deteksi YOLO bisa sangat banyak, jangan
+    # dimuat ke memori.
+    total, avg_conf = (
+        db.query(func.count(Detection.id), func.avg(Detection.confidence))
+        .filter(*conds)
+        .one()
+    )
 
-    # Agregasi per jam
-    hourly: dict = {}
-    species: dict = {}
+    # Format jam sama dengan datetime.isoformat() naive: 2026-09-25T10:00:00
+    hour_key = func.date_format(Detection.detected_at, "%Y-%m-%dT%H:00:00")
+    hourly = (
+        db.query(hour_key, func.count(Detection.id))
+        .filter(*conds)
+        .group_by(hour_key)
+        .order_by(hour_key)
+        .all()
+    )
 
-    for d in detections:
-        hour = d.detected_at.replace(minute=0, second=0, microsecond=0)
-        hour_key = hour.isoformat()
-        if hour_key not in hourly:
-            hourly[hour_key] = {"count": 0}
-        hourly[hour_key]["count"] += 1
-        species[d.species_name] = species.get(d.species_name, 0) + 1
-
-    total = len(detections)
-    avg_conf = (
-        sum(d.confidence for d in detections) / total if total else 0.0
+    # Seri: jumlah terbanyak dulu, sama banyak → spesies yang muncul duluan
+    species = (
+        db.query(Detection.species_name, func.count(Detection.id))
+        .filter(*conds)
+        .group_by(Detection.species_name)
+        .order_by(func.count(Detection.id).desc(), func.min(Detection.detected_at))
+        .all()
     )
 
     return {
@@ -76,16 +85,16 @@ def get_detection_analytics(
         "data": {
             "summary": {
                 "totalDetections": total,
-                "avgConfidence": round(avg_conf, 4),
+                "avgConfidence": round(float(avg_conf or 0.0), 4),
                 "uniqueSpecies": len(species),
             },
             "timeSeries": [
-                {"time": time, "detections": data["count"]}
-                for time, data in hourly.items()
+                {"time": time, "detections": cnt}
+                for time, cnt in hourly
             ],
             "speciesDistribution": [
                 {"species": sp, "count": cnt}
-                for sp, cnt in sorted(species.items(), key=lambda x: -x[1])
+                for sp, cnt in species
             ],
         },
     }
@@ -105,80 +114,113 @@ def get_telemetry_analytics(
     _: dict = Depends(get_current_user),
 ):
     start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-    query = db.query(Telemetry).filter(Telemetry.timestamp >= start_time)
+    conds = [Telemetry.timestamp >= start_time]
 
     if session_id:
-        query = query.filter(Telemetry.session_id == session_id)
+        conds.append(Telemetry.session_id == session_id)
 
     if from_date:
         try:
-            query = query.filter(
-                Telemetry.timestamp >= datetime.fromisoformat(from_date)
-            )
+            conds.append(Telemetry.timestamp >= datetime.fromisoformat(from_date))
         except ValueError:
             pass
 
     if to_date:
         try:
-            query = query.filter(
-                Telemetry.timestamp <= datetime.fromisoformat(to_date)
-            )
+            conds.append(Telemetry.timestamp <= datetime.fromisoformat(to_date))
         except ValueError:
             pass
 
-    telemetry = (
-        query.order_by(Telemetry.timestamp.asc())
-        .limit(500)
-        .all()
+    # Ringkasan dari SELURUH rentang (dulu cuma 500 baris pertama)
+    count, avg_ph, avg_tds, avg_do, avg_temp, first_ts, last_ts = (
+        db.query(
+            func.count(Telemetry.id),
+            func.avg(Telemetry.ph_level),
+            func.avg(Telemetry.tds_value),
+            func.avg(Telemetry.dissolved_oxygen),
+            func.avg(Telemetry.water_temp),
+            func.min(Telemetry.timestamp),
+            func.max(Telemetry.timestamp),
+        )
+        .filter(*conds)
+        .one()
+    )
+    latest_depth = (
+        db.query(Telemetry.depth)
+        .filter(*conds)
+        .order_by(Telemetry.timestamp.desc())
+        .limit(1)
+        .scalar()
     )
 
-    latest = telemetry[-1] if telemetry else None
-    count = len(telemetry)
-
-    avg_ph  = sum(t.ph_level or 0 for t in telemetry) / count if count else 0
-    avg_tds = sum(t.tds_value or 0 for t in telemetry) / count if count else 0
-    avg_do  = sum(t.dissolved_oxygen or 0 for t in telemetry) / count if count else 0
-    avg_temp = sum(t.water_temp or 0 for t in telemetry) / count if count else 0
+    series = _telemetry_series(db, conds, count, first_ts, last_ts)
+    _r = lambda v: round(float(v or 0), 2)
 
     return {
         "success": True,
         "data": {
             "summary": {
-                "avgPh": round(avg_ph, 2),
-                "avgTds": round(avg_tds, 2),
-                "avgDo": round(avg_do, 2),
-                "avgTemp": round(avg_temp, 2),
+                "avgPh": _r(avg_ph),
+                "avgTds": _r(avg_tds),
+                "avgDo": _r(avg_do),
+                "avgTemp": _r(avg_temp),
                 "dataPoints": count,
-                "latestDepth": round(latest.depth, 2) if latest and latest.depth is not None else 0,
+                "latestDepth": _r(latest_depth),
             },
-            "ph": [
-                {"time": t.timestamp.isoformat(), "value": round(t.ph_level or 0, 2)}
-                for t in telemetry
-            ],
-            "tds": [
-                {"time": t.timestamp.isoformat(), "value": round(t.tds_value or 0, 2)}
-                for t in telemetry
-            ],
-            "dissolvedOxygen": [
-                {"time": t.timestamp.isoformat(), "value": round(t.dissolved_oxygen or 0, 2)}
-                for t in telemetry
-            ],
-            "temperature": [
-                {"time": t.timestamp.isoformat(), "value": round(t.water_temp or 0, 2)}
-                for t in telemetry
-            ],
-            "depth": [
-                {"time": t.timestamp.isoformat(), "value": round(t.depth or 0, 2)}
-                for t in telemetry
-            ],
+            "ph": [{"time": s[0], "value": _r(s[1])} for s in series],
+            "tds": [{"time": s[0], "value": _r(s[2])} for s in series],
+            "dissolvedOxygen": [{"time": s[0], "value": _r(s[3])} for s in series],
+            "temperature": [{"time": s[0], "value": _r(s[4])} for s in series],
+            "depth": [{"time": s[0], "value": _r(s[5])} for s in series],
         },
     }
+
+
+# Batas titik grafik per respons (ukuran payload tetap kecil)
+TELEMETRY_MAX_POINTS = 500
+
+
+def _telemetry_series(db: Session, conds: list, count: int, first_ts, last_ts) -> list:
+    """
+    Titik grafik telemetri yang mencakup seluruh rentang waktu.
+
+    ≤ TELEMETRY_MAX_POINTS baris → semua baris apa adanya. Lebih dari itu →
+    rentang dibagi rata jadi maksimal TELEMETRY_MAX_POINTS ember waktu, tiap
+    titik = rata-rata ember, waktunya = timestamp pertama di ember.
+    Return list (iso_time, ph, tds, do, temp, depth) urut waktu.
+    """
+    cols = (
+        Telemetry.ph_level, Telemetry.tds_value, Telemetry.dissolved_oxygen,
+        Telemetry.water_temp, Telemetry.depth,
+    )
+    if count <= TELEMETRY_MAX_POINTS:
+        rows = (
+            db.query(Telemetry.timestamp, *cols)
+            .filter(*conds)
+            .order_by(Telemetry.timestamp.asc())
+            .all()
+        )
+    else:
+        span = int((last_ts - first_ts).total_seconds())
+        bucket_seconds = max(1, math.ceil((span + 1) / TELEMETRY_MAX_POINTS))
+        bucket = func.timestampdiff(literal_column("SECOND"), first_ts, Telemetry.timestamp).op("DIV")(bucket_seconds)
+        rows = (
+            db.query(func.min(Telemetry.timestamp), *(func.avg(c) for c in cols))
+            .filter(*conds)
+            .group_by(bucket)
+            .order_by(bucket)
+            .all()
+        )
+    return [(ts.isoformat(), *vals) for ts, *vals in rows]
 
 
 # ==========================
 # GET /api/analytics/auv-status
 # SPPI-41 getAuvStatusAnalytics
 # ==========================
+# Catatan: masih 500 baris PERTAMA (seperti telemetry dulu) — endpoint ini
+# belum dipakai frontend; perbaiki dengan pola _telemetry_series kalau dipakai
+# (heading berupa teks, tidak bisa dirata-rata).
 @router.get("/auv-status")
 def get_auv_status_analytics(
     hours: int = 24,
