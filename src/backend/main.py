@@ -15,7 +15,7 @@ if sys.platform == "win32":
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import SAVE_DETECTIONS_ENABLED, SAVE_INTERVAL_SECONDS
+from config import SAVE_DETECTIONS_ENABLED, SAVE_INTERVAL_SECONDS, CORS_ORIGINS, COOKIE_SECURE
 from models.yolo_detector import load_custom_model, get_device_info
 from database.connection import check_db_connection, init_db
 from video.recording import cleanup_all_recordings
@@ -83,6 +83,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("Starting Carter Island Backend...")
     logger.info("=" * 60)
+    logger.info(f"CORS origins: {', '.join(CORS_ORIGINS)} | cookie Secure: {COOKIE_SECURE}")
 
     # Cek dan inisialisasi database
     if not check_db_connection():
@@ -174,10 +175,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=CORS_ORIGINS,  # env CORS_ORIGINS, lihat config.py
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

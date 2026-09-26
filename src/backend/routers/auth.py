@@ -23,7 +23,7 @@ from auth.jwt import create_access_token
 from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
 from core.rate_limit import FailedAttemptLimiter
-from config import JWT_EXPIRE_MINUTES
+from config import JWT_EXPIRE_MINUTES, COOKIE_SECURE
 from schemas.auth import LoginRequest, RegisterRequest
 
 logger = logging.getLogger("carter-backend")
@@ -122,7 +122,7 @@ def login(
         value=access_token,
         httponly=True,       # Tidak bisa diakses JavaScript
         samesite="lax",      # Proteksi CSRF
-        secure=False,        # Set True kalau sudah pakai HTTPS
+        secure=COOKIE_SECURE,  # env COOKIE_SECURE=true kalau pakai HTTPS
         max_age=JWT_EXPIRE_MINUTES * 60,  # samakan dengan umur JWT
     )
 
@@ -203,8 +203,9 @@ async def logout(response: Response):
     """
     Logout — hapus cookie token.
     """
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
+    # Atribut harus sama dengan saat set_cookie agar browser menghapusnya
+    response.delete_cookie("access_token", httponly=True, samesite="lax", secure=COOKIE_SECURE)
+    response.delete_cookie("refresh_token", httponly=True, samesite="lax", secure=COOKIE_SECURE)
 
     return {"success": True, "message": "Logout berhasil"}
 

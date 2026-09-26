@@ -18,7 +18,7 @@ from webrtc.peer_connection import (
     get_detection_track,
     get_average_fps
 )
-from config import RTSP_URL
+from config import RTSP_URL, CORS_ORIGINS
 from core.dependencies import get_current_user, get_user_from_token
 from database.connection import SessionLocal
 from core.system_metrics import get_cpu_percent, get_gpu_percent
@@ -148,6 +148,15 @@ def setup_routes(app: FastAPI):
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
         """WebSocket endpoint for WebRTC signaling"""
+        # CORS tidak berlaku untuk WebSocket: tolak halaman dari origin lain
+        # yang mencoba memakai cookie login user (cross-site WebSocket hijacking).
+        # Client non-browser tanpa header Origin tetap lewat cek cookie di bawah.
+        origin = websocket.headers.get("origin")
+        if origin and origin.rstrip("/") not in CORS_ORIGINS:
+            logger.warning(f"WS client {client_id} ditolak: origin {origin} tidak diizinkan")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         # Wajib login: browser tidak bisa kirim header Authorization di WebSocket,
         # tapi cookie httpOnly access_token ikut terkirim saat handshake
         token = websocket.cookies.get("access_token")

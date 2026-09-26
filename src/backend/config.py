@@ -68,6 +68,28 @@ else:
     )
 
 # ==========================
+# Akses browser (CORS & cookie)
+# ==========================
+# Origin frontend yang boleh memanggil API & membuka WebSocket, dipisah koma.
+# Contoh LAN: CORS_ORIGINS=http://192.168.2.10:3000,http://localhost:3000
+CORS_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    if o.strip()
+]
+if "*" in CORS_ORIGINS:
+    # Dengan cookie login (allow_credentials), '*' = situs mana pun bisa
+    # memakai sesi user yang sedang login
+    raise ValueError(
+        "CORS_ORIGINS tidak boleh '*'. Tulis origin frontend secara lengkap, "
+        "mis. http://192.168.2.10:3000"
+    )
+
+# true HANYA jika frontend & backend diakses lewat HTTPS; di HTTP browser
+# membuang cookie Secure sehingga login tidak bertahan.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+
+# ==========================
 # JWT
 # ==========================
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", os.getenv("NEXTAUTH_SECRET", ""))
