@@ -113,6 +113,7 @@ async def login(
         user_id=user.id,
         email=user.email,
         role=user.role.value,
+        full_name=user.username,
     )
 
     # Set httpOnly cookie (lebih aman dari localStorage)
@@ -212,14 +213,20 @@ async def logout(response: Response):
 # GET /api/auth/me
 # ==========================
 @router.get("/me")
-async def get_me(
+def get_me(
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Dapatkan data user yang sedang login.
     Membutuhkan JWT token yang valid.
+    Format `user` sama dengan response login (_format_user) karena frontend
+    (verifySession) menyimpannya ke tempat yang sama.
     """
+    user = db.query(User).filter(User.id == current_user["id"]).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User tidak ditemukan")
     return {
         "success": True,
-        "user": current_user,
+        "user": _format_user(user),
     }

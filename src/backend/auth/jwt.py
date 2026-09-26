@@ -24,6 +24,7 @@ def create_access_token(
     user_id: str,
     email: str,
     role: str,
+    full_name: Optional[str] = None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """
@@ -33,6 +34,9 @@ def create_access_token(
         user_id: ID user dari database
         email: Email user
         role: Role user ('USER' atau 'ADMIN')
+        full_name: Nama tampilan — dibaca frontend (auth-utils.ts decodeJWT)
+            untuk Sidebar/Dashboard. Hanya untuk tampilan, tidak dipakai
+            backend; berubah di UI setelah login ulang.
         expires_delta: Override durasi expired (opsional)
 
     Returns:
@@ -57,6 +61,8 @@ def create_access_token(
         "exp": expire,
         "iat": datetime.now(timezone.utc),  # Issued at
     }
+    if full_name:
+        payload["fullName"] = full_name
 
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return token
