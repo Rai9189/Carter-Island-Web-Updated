@@ -11,21 +11,61 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from database.connection import get_db
 from database.models import User, Role, MonitoringSession
 from auth.password import hash_password
 from core.dependencies import require_admin
 from core.cuid import generate_cuid
+from core.validation import safe_str, check_password
 
 logger = logging.getLogger("carter-backend")
 
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
+_email_adapter = TypeAdapter(EmailStr)
+
 
 # ==========================
 # Helper
 # ==========================
+def _read_user_body(body: dict, default_role: str) -> tuple[str, str, str, str, str]:
+    """
+    Ambil & validasi tipe field user dari body mentah → 400 kalau salah.
+    Return (username, email, phone_number, role, password). Password tidak
+    di-strip (di-hash apa adanya); cek panjangnya diserahkan ke caller karena
+    di update password kosong berarti tidak diganti.
+    """
+    try:
+        username = safe_str(body.get("fullName"), "fullName")
+        email = safe_str(body.get("email"), "email").lower()
+        phone_number = safe_str(body.get("phoneNumber"), "phoneNumber")
+        password = body.get("password") or ""
+        if not isinstance(password, str):
+            raise ValueError("password harus berupa teks")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    role = body.get("role") or default_role
+    if role not in ("USER", "ADMIN"):
+        raise HTTPException(status_code=400, detail="Role harus USER atau ADMIN")
+
+    if email:
+        try:
+            _email_adapter.validate_python(email)
+        except ValidationError:
+            raise HTTPException(status_code=400, detail="Format email tidak valid")
+
+    return username, email, phone_number, role, password
+
+
+def _check_password_or_400(password: str) -> None:
+    try:
+        check_password(password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 def _format_user(user: User) -> dict:
     return {
         "id": user.id,
@@ -118,17 +158,12 @@ def create_user(
     POST create user baru oleh admin.
     Port dari src/app/api/users/route.ts POST
     """
-    username = body.get("fullName", "").strip()
-    email = body.get("email", "").strip().lower()
-    password = body.get("password", "")
-    phone_number = body.get("phoneNumber", "").strip()
-    role = body.get("role", "USER")
+    username, email, phone_number, role, password = _read_user_body(body, "USER")
 
     if not all([username, email, password, phone_number]):
         raise HTTPException(status_code=400, detail="Semua field wajib diisi")
 
-    if role not in ("USER", "ADMIN"):
-        raise HTTPException(status_code=400, detail="Role harus USER atau ADMIN")
+    _check_password_or_400(password)
 
     existing = db.query(User).filter(User.email == email).first()
     if existing:
@@ -190,11 +225,7 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User tidak ditemukan")
 
-    username = body.get("fullName", "").strip()
-    email = body.get("email", "").strip().lower()
-    phone_number = body.get("phoneNumber", "").strip()
-    role = body.get("role", user.role.value)
-    password = body.get("password", "")
+    username, email, phone_number, role, password = _read_user_body(body, user.role.value)
 
     if not all([username, email, phone_number]):
         raise HTTPException(
@@ -202,8 +233,9 @@ def update_user(
             detail="fullName, email, dan phoneNumber wajib diisi"
         )
 
-    if role not in ("USER", "ADMIN"):
-        raise HTTPException(status_code=400, detail="Role harus USER atau ADMIN")
+    # Password kosong = tidak diganti
+    if password.strip():
+        _check_password_or_400(password)
 
     # Cek email tidak dipakai user lain
     if email != user.email:

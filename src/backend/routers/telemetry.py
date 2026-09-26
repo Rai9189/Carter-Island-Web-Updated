@@ -18,6 +18,7 @@ from database.models import Telemetry, MonitoringSession
 from core.dependencies import get_current_user
 from core.cuid import generate_cuid
 from core.csv_export import csv_response, parse_date_range
+from core.validation import safe_str, safe_float
 
 logger = logging.getLogger("carter-backend")
 
@@ -104,7 +105,10 @@ def save_telemetry(
         water_temp       : float
         depth            : float (opsional, default 0.0)
     """
-    session_id = body.get("session_id") or body.get("sessionId")
+    try:
+        session_id = safe_str(body.get("session_id") or body.get("sessionId"), "session_id")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id wajib diisi")
 
@@ -125,17 +129,20 @@ def save_telemetry(
         )
 
     now = datetime.now(timezone.utc)
-    telemetry = Telemetry(
-        id=generate_cuid(),
-        session_id=session_id,
-        timestamp=now,
-        depth=float(body.get("depth") or 0.0),
-        ph_level=float(ph_level),
-        tds_value=float(tds_value),
-        dissolved_oxygen=float(dissolved_oxygen),
-        water_temp=float(water_temp),
-        created_at=now,
-    )
+    try:
+        telemetry = Telemetry(
+            id=generate_cuid(),
+            session_id=session_id,
+            timestamp=now,
+            depth=safe_float(body.get("depth") or None, "depth", default=0.0),
+            ph_level=safe_float(ph_level, "ph_level"),
+            tds_value=safe_float(tds_value, "tds_value"),
+            dissolved_oxygen=safe_float(dissolved_oxygen, "dissolved_oxygen"),
+            water_temp=safe_float(water_temp, "water_temp"),
+            created_at=now,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     db.add(telemetry)
     db.commit()

@@ -153,7 +153,7 @@ async def register(
     Validasi:
     - Semua field wajib diisi
     - Format email valid
-    - Password minimal 6 karakter
+    - Password minimal 8 karakter (core.validation.PASSWORD_MIN_LENGTH)
     - Email belum terdaftar
     """
     # Validasi format email (sudah dilakukan Pydantic EmailStr)

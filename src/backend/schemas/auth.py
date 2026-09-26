@@ -5,6 +5,8 @@ Dipakai untuk validasi request body.
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 
+from core.validation import check_password
+
 
 # ==========================
 # Request schemas
@@ -31,9 +33,7 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def password_min_length(cls, v: str) -> str:
-        if len(v) < 6:
-            raise ValueError("Password minimal 6 karakter")
-        return v
+        return check_password(v)
 
     @field_validator("role")
     @classmethod

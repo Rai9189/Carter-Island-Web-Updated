@@ -32,6 +32,7 @@ from database.models import (
 )
 from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
+from core.validation import safe_str
 
 logger = logging.getLogger("carter-backend")
 
@@ -55,7 +56,12 @@ def create_session(
     Payload:
         location_name : str — nama lokasi survei (wajib)
     """
-    location_name = (body.get("locationName") or body.get("location_name", "")).strip()
+    try:
+        location_name = safe_str(
+            body.get("locationName") or body.get("location_name"), "locationName"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not location_name:
         raise HTTPException(status_code=400, detail="locationName wajib diisi")
 
@@ -257,7 +263,11 @@ def update_session(
     if not session:
         raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
 
-    new_status = body.get("status", "")
+    try:
+        new_status = safe_str(body.get("status"), "status")
+        location_name = safe_str(body.get("locationName"), "locationName")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if new_status not in ("Completed", "Aborted"):
         raise HTTPException(
             status_code=400,
@@ -275,7 +285,6 @@ def update_session(
     session.end_time   = now
     session.updated_at = now
 
-    location_name = (body.get("locationName") or "").strip()
     if location_name:
         session.location_name = location_name
 

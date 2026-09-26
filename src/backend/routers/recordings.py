@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from database.connection import get_db
 from database.models import VideoPath, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user, require_admin
+from core.validation import safe_str
 from config import RECORDINGS_DIR, LEGACY_RECORDINGS_DIR
 
 logger = logging.getLogger("carter-backend")
@@ -47,9 +48,12 @@ def save_recording_session(
         description : str — deskripsi opsional (tidak disimpan ke DB saat ini)
         clientId    : str — opsional, untuk referensi logging
     """
-    session_id = body.get("sessionId")
-    mission_name = (body.get("missionName") or "").strip()
-    location = (body.get("location") or "").strip()
+    try:
+        session_id = safe_str(body.get("sessionId"), "sessionId")
+        mission_name = safe_str(body.get("missionName"), "missionName")
+        location = safe_str(body.get("location"), "location")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     if not session_id:
         raise HTTPException(status_code=400, detail="sessionId wajib diisi")
