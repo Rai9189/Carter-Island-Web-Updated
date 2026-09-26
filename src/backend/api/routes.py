@@ -2,10 +2,11 @@
 FastAPI routes for Carter Island Backend
 """
 import json
+import re
 import torch
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
-from typing import Set
+from typing import Dict, Set
 
 from models.yolo_detector import get_model, get_model_info
 from video.recording import (
@@ -27,6 +28,25 @@ logger = logging.getLogger("carter-backend")
 
 # Active WebSocket connections
 active_connections: Set[WebSocket] = set()
+
+# client_id → {"user": pemilik, "ws": koneksi WebSocket yang aktif}.
+# client_id dipakai sebagai kunci stream/rekaman DAN nama file rekaman.
+client_connections: Dict[str, dict] = {}
+CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _owned_client(client_id: str, user: dict) -> None:
+    """
+    Kendali rekaman hanya untuk pemilik stream (atau ADMIN). Misi tetap data
+    bersama (bisa ditutup siapa pun via PATCH sesi); yang dibatasi hanya
+    kendali atas stream milik browser orang lain. 404 agar keberadaan
+    client_id orang lain tidak bocor.
+    """
+    if not CLIENT_ID_RE.match(client_id):
+        raise HTTPException(status_code=400, detail="client_id tidak valid")
+    conn = client_connections.get(client_id)
+    if conn is None or (conn["user"]["id"] != user["id"] and user["role"] != "ADMIN"):
+        raise HTTPException(status_code=404, detail="Client not found or not streaming")
 
 
 def setup_routes(app: FastAPI):
@@ -79,8 +99,9 @@ def setup_routes(app: FastAPI):
         return get_model_info()
 
     @app.post("/api/recording/start/{client_id}")
-    async def start_recording_endpoint(client_id: str, _: dict = Depends(get_current_user)):
+    async def start_recording_endpoint(client_id: str, current_user: dict = Depends(get_current_user)):
         """Start recording for a client"""
+        _owned_client(client_id, current_user)
         detection_track = get_detection_track(client_id)
         if not detection_track:
             return {"success": False, "error": "Client not found or not streaming"}
@@ -102,8 +123,9 @@ def setup_routes(app: FastAPI):
             return {"success": False, "error": "Failed to start recording"}
 
     @app.post("/api/recording/stop/{client_id}")
-    async def stop_recording_endpoint(client_id: str, _: dict = Depends(get_current_user)):
+    async def stop_recording_endpoint(client_id: str, current_user: dict = Depends(get_current_user)):
         """Stop recording for a client"""
+        _owned_client(client_id, current_user)
         if not is_recording(client_id):
             return {"success": False, "error": "Not recording"}
 
@@ -124,18 +146,31 @@ def setup_routes(app: FastAPI):
             return {"success": False, "error": "Failed to stop recording"}
 
     @app.get("/api/recording/status/{client_id}")
-    async def recording_status_endpoint(client_id: str, _: dict = Depends(get_current_user)):
+    async def recording_status_endpoint(client_id: str, current_user: dict = Depends(get_current_user)):
         """Get recording status for a client"""
+        _owned_client(client_id, current_user)
         recording = is_recording(client_id)
         info = get_recording_info(client_id) if recording else None
         return {
             "recording": recording,
-            "info": info
+            # Hanya field yang bisa di-JSON-kan (entri aslinya memuat cv2.VideoWriter)
+            "info": {
+                "recording_id": info["recording_id"],
+                "filename": info["filename"],
+                "start_time": info["start_time"].isoformat(),
+                "session_id": info["session_id"],
+            } if info else None,
         }
 
     @app.websocket("/ws/{client_id}")
     async def websocket_endpoint(websocket: WebSocket, client_id: str):
         """WebSocket endpoint for WebRTC signaling"""
+        # client_id jadi bagian nama file rekaman → wajib aman untuk nama file
+        if not CLIENT_ID_RE.match(client_id):
+            logger.warning(f"WS ditolak: client_id tidak valid {client_id!r}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         # CORS tidak berlaku untuk WebSocket: tolak halaman dari origin lain
         # yang mencoba memakai cookie login user (cross-site WebSocket hijacking).
         # Client non-browser tanpa header Origin tetap lewat cek cookie di bawah.
@@ -159,6 +194,16 @@ def setup_routes(app: FastAPI):
             return
         finally:
             db.close()
+
+        # client_id yang sedang aktif hanya boleh dipakai ulang oleh user yang
+        # sama (sambung ulang dari browser yang sama). User lain ditolak agar
+        # tidak bisa mematikan/mengambil alih stream & rekaman operator lain.
+        existing = client_connections.get(client_id)
+        if existing and existing["user"]["id"] != user["id"]:
+            logger.warning(f"WS client {client_id} ditolak: sedang dipakai user lain")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        client_connections[client_id] = {"user": user, "ws": websocket}
 
         await websocket.accept()
         logger.info(f"WS client {client_id} diterima untuk {user['email']}")
@@ -194,7 +239,12 @@ def setup_routes(app: FastAPI):
             logger.exception(f"WS error {client_id}: {e}")
         finally:
             active_connections.discard(websocket)
-            await cleanup_pc(client_id)
+            # Kalau koneksi ini sudah digantikan sambungan ulang (client_id sama),
+            # jangan bersihkan — stream milik koneksi baru.
+            conn = client_connections.get(client_id)
+            if conn is not None and conn["ws"] is websocket:
+                client_connections.pop(client_id, None)
+                await cleanup_pc(client_id)
 
 
 def get_device_info():

@@ -145,7 +145,11 @@ export default function StreamComponent() {
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null)
 
   const [isClient, setIsClient] = useState(false)
-  const [clientId] = useState(() => Math.random().toString(36).substring(7))
+  // 32 hex acak (128-bit). getRandomValues, bukan randomUUID: randomUUID tidak
+  // tersedia di HTTP LAN (hanya HTTPS/localhost). Backend wajib [A-Za-z0-9_-]{8,64}.
+  const [clientId] = useState(() =>
+    Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
+  )
   const [connStatus, setConnStatus] = useState<ConnStatus>('disconnected')
   const [isStreaming, setIsStreaming] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
