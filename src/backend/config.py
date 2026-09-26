@@ -1,5 +1,4 @@
 import os
-import uuid
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,11 +51,6 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "16sept.pt")
 YOLO_CONF_THRESHOLD = float(os.getenv("YOLO_CONF_THRESHOLD", "0.45"))
 YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.5"))
 YOLO_MAX_DETECTIONS = int(os.getenv("YOLO_MAX_DETECTIONS", "30"))
-
-# ==========================
-# Session ID
-# ==========================
-streaming_session_id = str(uuid.uuid4())
 
 # ==========================
 # Database

@@ -18,15 +18,21 @@ Perubahan dari versi lama:
 import asyncio
 import logging
 from typing import List, Tuple, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from database.connection import SessionLocal
-from database.models import Detection
+from database.models import Detection, MonitoringSession, SessionStatus, Telemetry, AUVStatus
 from database.crud.fish_counts import recompute_fish_counts
 from core.cuid import generate_cuid
-from config import streaming_session_id
 
 logger = logging.getLogger("carter-backend")
+
+# Telemetri/AUVStatus lebih tua dari ini dianggap basi untuk konteks deteksi
+# (health check menyimpan tiap 5 detik → 3x interval sampling).
+CONTEXT_MAX_AGE_SECONDS = 15
+
+# Supaya "tidak ada misi aktif" tidak memenuhi log tiap interval simpan
+_warned_no_session = False
 
 
 async def save_detection_to_db(
@@ -62,37 +68,48 @@ def _save_detections_sync(
         detections        : List of (x1, y1, x2, y2, confidence, class_name)
                             dari run_inference() di yolo_detector.py
         frame_number      : Nomor frame saat deteksi (opsional)
-        session_id        : ID sesi monitoring — jika None pakai streaming_session_id
-        telemetry_id      : FK ke telemetries untuk konteks kedalaman (opsional)
-        depth_at_detection: Kedalaman ROV saat deteksi terjadi (opsional)
+        session_id        : ID sesi monitoring — jika None pakai sesi RUNNING;
+                            tanpa sesi RUNNING deteksi TIDAK disimpan
+        telemetry_id      : FK ke telemetries (opsional)
+        depth_at_detection: Kedalaman ROV saat deteksi (opsional)
+        Kalau telemetry_id & depth_at_detection sama-sama None, diisi dari
+        data segar (≤ CONTEXT_MAX_AGE_SECONDS) misi yang sama — lihat
+        _recent_context().
 
     Returns:
-        True jika berhasil disimpan, False jika gagal
+        True jika berhasil disimpan, False jika gagal / tidak ada misi aktif
     """
+    global _warned_no_session
     if not detections:
         return False
-
-    # Pakai session_id dari parameter; jika tidak ada, ambil session aktif dari DB
-    if session_id:
-        active_session_id = session_id
-    else:
-        try:
-            from database.connection import SessionLocal
-            from database.models import MonitoringSession, SessionStatus
-            _db = SessionLocal()
-            try:
-                _s = _db.query(MonitoringSession).filter(
-                    MonitoringSession.status == SessionStatus.RUNNING
-                ).order_by(MonitoringSession.start_time.desc()).first()
-                active_session_id = _s.id if _s else streaming_session_id
-            finally:
-                _db.close()
-        except Exception:
-            active_session_id = streaming_session_id
 
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
+
+        # Pakai session_id dari parameter; jika tidak ada, ambil session aktif
+        if session_id:
+            active_session_id = session_id
+        else:
+            active = (
+                db.query(MonitoringSession.id)
+                .filter(MonitoringSession.status == SessionStatus.RUNNING)
+                .order_by(MonitoringSession.start_time.desc())
+                .first()
+            )
+            if active is None:
+                if not _warned_no_session:
+                    logger.warning(
+                        "Deteksi tidak disimpan: tidak ada misi Running "
+                        "(pesan ini muncul sekali sampai ada misi lagi)"
+                    )
+                    _warned_no_session = True
+                return False
+            active_session_id = active.id
+        _warned_no_session = False
+
+        if telemetry_id is None and depth_at_detection is None:
+            telemetry_id, depth_at_detection = _recent_context(db, active_session_id, now)
 
         # Setiap deteksi = satu record Detection
         for (x1, y1, x2, y2, conf, class_name) in detections:
@@ -130,3 +147,31 @@ def _save_detections_sync(
         return False
     finally:
         db.close()
+
+
+def _recent_context(db, session_id: str, now: datetime) -> Tuple[Optional[str], Optional[float]]:
+    """
+    (telemetry_id, depth) dari data misi yang sama yang masih segar:
+    Telemetry terbaru → id + depth-nya; kalau tidak ada, AUVStatus terbaru →
+    depth saja; kalau tidak ada keduanya → (None, None). Data basi tidak dipakai.
+    """
+    # Kolom DATETIME menyimpan UTC tanpa zona waktu
+    since = (now - timedelta(seconds=CONTEXT_MAX_AGE_SECONDS)).replace(tzinfo=None)
+
+    tel = (
+        db.query(Telemetry.id, Telemetry.depth)
+        .filter(Telemetry.session_id == session_id, Telemetry.timestamp >= since)
+        .order_by(Telemetry.timestamp.desc())
+        .first()
+    )
+    if tel is not None:
+        return tel.id, tel.depth
+
+    auv_depth = (
+        db.query(AUVStatus.depth)
+        .filter(AUVStatus.session_id == session_id, AUVStatus.timestamp >= since)
+        .order_by(AUVStatus.timestamp.desc())
+        .limit(1)
+        .scalar()
+    )
+    return None, auv_depth

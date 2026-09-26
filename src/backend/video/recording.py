@@ -9,7 +9,6 @@ from config import (
     RECORDINGS_DIR,
     RESIZE_WIDTH,
     RESIZE_HEIGHT,
-    streaming_session_id
 )
 from database.crud.recordings import save_recording_to_db
 
@@ -22,7 +21,12 @@ logger = logging.getLogger("carter-backend")
 active_recordings: Dict[str, dict] = {}
 
 
-def _active_session_id() -> str:
+class NoActiveMissionError(Exception):
+    """Tidak ada misi Running — rekaman ditolak agar video tidak yatim
+    (video_paths.session_id wajib merujuk ke misi yang ada)."""
+
+
+def _active_session_id() -> Optional[str]:
     from database.connection import SessionLocal
     from database.models import MonitoringSession, SessionStatus
     db = SessionLocal()
@@ -30,7 +34,7 @@ def _active_session_id() -> str:
         s = db.query(MonitoringSession).filter(
             MonitoringSession.status == SessionStatus.RUNNING
         ).order_by(MonitoringSession.start_time.desc()).first()
-        return s.id if s else streaming_session_id
+        return s.id if s else None
     finally:
         db.close()
 
@@ -40,13 +44,15 @@ async def start_recording(client_id: str, detection_track) -> Optional[str]:
         logger.warning(f"Client {client_id} is already recording")
         return None
 
-    # Ambil session aktif dari DB (di thread, tidak memblokir event loop);
-    # fallback ke streaming_session_id jika tidak ada
+    # Ambil session aktif dari DB (di thread, tidak memblokir event loop)
     try:
         actual_session_id = await asyncio.to_thread(_active_session_id)
     except Exception as _e:
         logger.warning(f"Could not get active session from DB: {_e}")
-        actual_session_id = streaming_session_id
+        return None
+    if actual_session_id is None:
+        logger.warning(f"Rekaman client {client_id} ditolak: tidak ada misi Running")
+        raise NoActiveMissionError()
 
     try:
         recording_id = f"{client_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

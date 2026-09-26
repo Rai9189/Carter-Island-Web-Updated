@@ -8,7 +8,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPExcept
 from typing import Set
 
 from models.yolo_detector import get_model, get_model_info
-from video.recording import start_recording, stop_recording, is_recording, get_recording_info
+from video.recording import (
+    start_recording, stop_recording, is_recording, get_recording_info, NoActiveMissionError,
+)
 from webrtc.peer_connection import (
     handle_offer,
     cleanup_pc,
@@ -98,7 +100,10 @@ def setup_routes(app: FastAPI):
         if is_recording(client_id):
             return {"success": False, "error": "Already recording"}
 
-        recording_id = await start_recording(client_id, detection_track)
+        try:
+            recording_id = await start_recording(client_id, detection_track)
+        except NoActiveMissionError:
+            return {"success": False, "error": "Tidak ada misi aktif — rekaman tidak dimulai"}
         if recording_id:
             return {
                 "success": True,
