@@ -13,6 +13,10 @@ Endpoints:
   GET    /api/sessions/{id}     — detail satu sesi
   PATCH  /api/sessions/{id}     — update status sesi (complete/abort)
   DELETE /api/sessions/{id}     — hapus sesi (admin only)
+
+Kebijakan akses: misi adalah data tim bersama (satu ROV, satu misi Running).
+Semua user yang login boleh melihat dan menutup (complete/abort) misi siapa
+pun; menghapus misi hanya ADMIN.
 """
 import logging
 from datetime import datetime, timezone
@@ -129,20 +133,16 @@ def get_sessions(
     status_filter: Optional[str] = None,
     sort: str = "desc",
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(get_current_user),
 ):
     """
     GET list sesi dengan pagination.
     Opsional filter by status: Running | Completed | Aborted
-    USER biasa cuma lihat sesi miliknya sendiri; ADMIN lihat semua.
     """
     limit = min(max(limit, 1), 500)
     page = max(page, 1)
     skip = (page - 1) * limit
     query = db.query(MonitoringSession)
-
-    if current_user["role"] != "ADMIN":
-        query = query.filter(MonitoringSession.user_id == current_user["id"])
 
     if status_filter:
         try:
@@ -183,12 +183,11 @@ def get_sessions(
 def get_session(
     session_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    _: dict = Depends(get_current_user),
 ):
     """
     GET detail satu sesi beserta ringkasan data yang terkumpul:
     jumlah deteksi, jumlah telemetri, jumlah recording.
-    USER biasa cuma boleh akses sesi miliknya sendiri; ADMIN semua.
     """
     session = db.query(MonitoringSession).filter(
         MonitoringSession.id == session_id
@@ -196,9 +195,6 @@ def get_session(
 
     if not session:
         raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
-
-    if current_user["role"] != "ADMIN" and session.user_id != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Anda tidak punya akses ke sesi ini")
 
     # Ringkasan data dalam sesi
     detection_count = db.query(func.count(Detection.id)).filter(
@@ -260,9 +256,6 @@ def update_session(
 
     if not session:
         raise HTTPException(status_code=404, detail="Sesi tidak ditemukan")
-
-    if current_user["role"] != "ADMIN" and session.user_id != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Anda tidak punya akses ke sesi ini")
 
     new_status = body.get("status", "")
     if new_status not in ("Completed", "Aborted"):
