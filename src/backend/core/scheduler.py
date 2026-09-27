@@ -4,6 +4,8 @@ Background scheduler menggunakan APScheduler.
 Job yang berjalan:
   - health_check_job    : tiap 5 detik — cek koneksi ROV, simpan status navigasi
                           & kualitas air (pH/TDS/DO/suhu) dari Raspberry Pi
+  - stale_session_job   : tiap 60 detik — misi Running tanpa stream selama
+                          STALE_SESSION_MINUTES → Aborted
   - sync_sessions_job   : tiap X detik — kirim sesi misi baru/berubah ke Base Station
   - sync_telemetry_job  : tiap X detik — SPPI-45 kirim telemetri ke Base Station
   - sync_detections_job : tiap X detik — SPPI-46 kirim deteksi ke Base Station
@@ -27,7 +29,9 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from config import BASE_STATION_URL, BASE_STATION_SYNC_TOKEN, SYNC_INTERVAL_SECONDS
+from config import (
+    BASE_STATION_URL, BASE_STATION_SYNC_TOKEN, SYNC_INTERVAL_SECONDS, STALE_SESSION_MINUTES,
+)
 from core.validation import safe_float
 
 logger = logging.getLogger("carter-backend")
@@ -201,6 +205,59 @@ def _save_health_data(telemetry_data: dict, has_navigation: bool, water_quality)
 
 
 # ==========================
+# Job 2 — Tutup misi tertinggal tiap 60 detik
+# ==========================
+# Kapan terakhir ada stream WebRTC tersambung (UTC naive, sama dengan kolom DB).
+# ponytail: state di memori, asumsi backend 1 proses; restart sudah di-abort main.py
+_last_stream_at: Optional[datetime] = None
+
+
+async def stale_session_job():
+    """Misi Running tanpa stream selama STALE_SESSION_MINUTES → Aborted."""
+    global _last_stream_at
+    from webrtc.peer_connection import get_peer_connections
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if get_peer_connections():
+        _last_stream_at = now
+        return
+    await asyncio.to_thread(_abort_stale_session, now, _last_stream_at)
+
+
+def _abort_stale_session(now: datetime, last_stream_at: Optional[datetime]) -> None:
+    from datetime import timedelta
+    from database.connection import SessionLocal
+    from database.models import MonitoringSession, SessionStatus
+
+    db = SessionLocal()
+    try:
+        session = (
+            db.query(MonitoringSession)
+            .filter(MonitoringSession.status == SessionStatus.RUNNING)
+            .order_by(MonitoringSession.start_time.desc())
+            .first()
+        )
+        if session is None:
+            return
+        idle_since = max(filter(None, (session.start_time, last_stream_at)))
+        if now - idle_since < timedelta(minutes=STALE_SESSION_MINUTES):
+            return
+        session.status = SessionStatus.ABORTED
+        session.end_time = now
+        session.updated_at = now
+        db.commit()
+        logger.warning(
+            f"Auto-aborted sesi {session.id} ({session.location_name}) — "
+            f"tanpa stream sejak {idle_since.isoformat()}Z"
+        )
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Stale session check error: {e}")
+    finally:
+        db.close()
+
+
+# ==========================
 # Helper — cek status ROV
 # ==========================
 def is_rov_online() -> bool:
@@ -227,6 +284,18 @@ def setup_scheduler():
 
     logger.info("Scheduler jobs registered:")
     logger.info("  - health_check_job : tiap 5 detik")
+
+    # Job 2 — Tutup misi tertinggal
+    if STALE_SESSION_MINUTES > 0:
+        scheduler.add_job(
+            stale_session_job,
+            trigger=IntervalTrigger(seconds=60),
+            id="stale_session",
+            name="Auto-abort misi tanpa stream",
+            replace_existing=True,
+            misfire_grace_time=30,
+        )
+        logger.info(f"  - stale_session_job : tiap 60 detik (batas {STALE_SESSION_MINUTES} menit)")
 
     # Job 3/4/5 — Sync ROV → Base Station (hanya aktif jika dikonfigurasi)
     if BASE_STATION_URL and BASE_STATION_SYNC_TOKEN:

@@ -45,6 +45,14 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 LEGACY_RECORDINGS_DIR = tempfile.gettempdir()
 
 # ==========================
+# Misi tertinggal
+# ==========================
+# Misi Running tanpa stream tersambung selama N menit (tab ditutup, laptop mati)
+# otomatis jadi Aborted — kalau tidak, health check terus mengisi misi itu dan
+# stream berikutnya menempel ke misi lama. 0 = nonaktif.
+STALE_SESSION_MINUTES = int(os.getenv("STALE_SESSION_MINUTES", "10"))
+
+# ==========================
 # Model Settings
 # ==========================
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "16sept.pt")
