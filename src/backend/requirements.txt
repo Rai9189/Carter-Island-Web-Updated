@@ -97,3 +97,6 @@ email-validator==2.3.0
 
 # Scheduled jobs (ganti manual cleanup & health check polling)
 APScheduler==3.10.4
+
+# Tes otomatis (smoke test: venv\Scripts\python -m pytest tests -q)
+pytest==9.1.1
