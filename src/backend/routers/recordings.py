@@ -151,10 +151,33 @@ def delete_recording(
     if not recording:
         raise HTTPException(status_code=404, detail="Recording tidak ditemukan")
 
+    file_name = recording.file_name
     db.delete(recording)
     db.commit()
+    delete_recording_files([file_name])
 
     return {"success": True, "message": "Recording berhasil dihapus"}
+
+
+def delete_recording_files(file_names: list[str]) -> None:
+    """
+    Hapus file video milik baris video_paths yang SUDAH dihapus dari DB.
+    Dipanggil setelah commit — kalau DB gagal, video tidak ikut hilang.
+    Hanya nama yang tercatat di DB yang disentuh (aman untuk folder temp lama).
+    Gagal hapus (mis. file sedang dibuka di Windows) cukup di-log.
+    """
+    for name in file_names:
+        if not name or ".." in name or "/" in name or "\\" in name:
+            continue
+        for d in (RECORDINGS_DIR, LEGACY_RECORDINGS_DIR):
+            path = os.path.join(d, name)
+            try:
+                os.remove(path)
+                logger.info(f"Recording file deleted: {path}")
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning(f"Gagal menghapus file recording {path}: {e}")
 
 
 # ==========================

@@ -34,6 +34,7 @@ from core.dependencies import get_current_user, require_admin
 from core.cuid import generate_cuid
 from core.validation import safe_str
 from core.timeutil import iso_utc
+from routers.recordings import delete_recording_files
 
 logger = logging.getLogger("carter-backend")
 
@@ -326,8 +327,10 @@ def delete_session(
                    "Selesaikan sesi terlebih dahulu."
         )
 
+    file_names = [v.file_name for v in session.video_paths]
     db.delete(session)
     db.commit()
+    delete_recording_files(file_names)
 
     logger.info(f"Session deleted: {session_id}")
     return {"success": True, "message": f"Sesi {session_id} berhasil dihapus"}
