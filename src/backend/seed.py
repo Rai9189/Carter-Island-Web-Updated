@@ -5,12 +5,12 @@ Jalankan dari folder src/backend/:
 
 Akan membuat:
   - 2 user (1 ADMIN, 1 USER)
-  - 6 monitoring sessions (Completed)
+  - 7 monitoring sessions (Completed, 1 sengaja kosong)
   - Telemetry data per session
   - AUV status per session
   - Detections per session
-  - Fish counts per session
-  - Video paths per session
+  - Fish counts per session (dihitung dari detections)
+  - Video paths per session (klip dummy .webm di RECORDINGS_DIR)
 """
 
 import sys
@@ -24,28 +24,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database.connection import get_db, init_db, check_db_connection
 from database.models import (
     User, MonitoringSession, Telemetry, AUVStatus,
-    Detection, FishCount, VideoPath, Role, SessionStatus
+    Detection, VideoPath, Role, SessionStatus
 )
+from database.crud.fish_counts import recompute_fish_counts
+from config import RECORDINGS_DIR
 from core.cuid import generate_cuid
+import cv2
+import numpy as np
 from auth.password import hash_password
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SPECIES = ['Kerapu', 'Bandeng', 'Teri', 'Unknown']
+SPECIES = ['Nila', 'Bandeng', 'Kerapu']
 HEADINGS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-LOCATIONS = [
-    'Survei Laut', 'Survei Semarang', 'Survei Yogya',
-    'Survei Solo', 'Survei Jakarta', 'Survei Bali'
-]
 
-# Sessions: (location, days_ago, duration_hours, duration_minutes)
+# Misi milik akun USER (sisanya milik ADMIN)
+USER_LOCATIONS = {'Survei Yogya', 'Survei Semarang'}
+
+# Sessions: (location, days_ago, duration_hours, duration_minutes, kosong)
+# kosong=True → tanpa telemetri/deteksi/rekaman, untuk uji tampilan "No Data"
 SESSION_CONFIGS = [
-    ('Survei Bali',     49, 1, 45),
-    ('Survei Jakarta',  42, 2, 30),
-    ('Survei Solo',     36, 3,  0),
-    ('Survei Yogya',    30, 1, 50),
-    ('Survei Semarang', 20, 2, 15),
-    ('Survei Laut',      0, 0, 42),  # paling baru
+    ('Survei Bali',     49, 1, 45, False),
+    ('Survei Jakarta',  42, 2, 30, False),
+    ('Survei Solo',     36, 3,  0, False),
+    ('Survei Yogya',    30, 1, 50, False),
+    ('Survei Semarang', 20, 2, 15, False),
+    ('Survei Kosong',   10, 0, 30, True),
+    ('Survei Laut',      0, 0, 42, False),  # paling baru
 ]
 
 
@@ -55,6 +60,17 @@ def rnd(a: float, b: float, decimals: int = 2) -> float:
 
 def make_timestamp(base: datetime, offset_minutes: int) -> datetime:
     return base + timedelta(minutes=offset_minutes)
+
+
+def make_dummy_video(path: str, label: str, seconds: int = 10, fps: int = 10) -> None:
+    """Klip .webm kecil (VP80, sama dengan perekam asli) supaya putar/unduh/hapus bisa diuji."""
+    writer = cv2.VideoWriter(path, cv2.VideoWriter.fourcc(*'VP80'), fps, (320, 240))
+    for i in range(seconds * fps):
+        frame = np.full((240, 320, 3), (90, 60, 20), np.uint8)
+        cv2.putText(frame, label, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(frame, f"{i / fps:4.1f}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        writer.write(frame)
+    writer.release()
 
 
 # ── Main Seed ─────────────────────────────────────────────────────────────────
@@ -115,16 +131,19 @@ def seed():
     print("\n📋 Membuat monitoring sessions...")
     now = datetime.now(timezone.utc)
 
-    for loc, days_ago, dur_h, dur_m in SESSION_CONFIGS:
-        start = now - timedelta(days=days_ago, hours=8)
-        start = start.replace(hour=random.choice([6, 7, 8, 9]), minute=random.choice([0, 30]), second=0, microsecond=0)
+    for loc, days_ago, dur_h, dur_m, kosong in SESSION_CONFIGS:
         duration_secs = dur_h * 3600 + dur_m * 60
+        # 00:00–02:30 UTC = 07:00–09:30 WIB
+        start = (now - timedelta(days=days_ago)).replace(
+            hour=random.choice([0, 1, 2]), minute=random.choice([0, 30]), second=0, microsecond=0)
+        # misi harus sudah selesai sebelum seed dijalankan
+        start = min(start, now - timedelta(seconds=duration_secs + 600)).replace(second=0, microsecond=0)
         end = start + timedelta(seconds=duration_secs) if duration_secs > 0 else None
         status = SessionStatus.COMPLETED if end else SessionStatus.RUNNING
 
         session = MonitoringSession(
             id=generate_cuid(),
-            user_id=admin.id,
+            user_id=user.id if loc in USER_LOCATIONS else admin.id,
             location_name=loc,
             start_time=start,
             end_time=end,
@@ -135,7 +154,10 @@ def seed():
         db.add(session)
         db.flush()
 
-        print(f"   ✅ Session: {loc} ({start.strftime('%Y-%m-%d %H:%M')} → {end.strftime('%H:%M') if end else 'running'}, {dur_h}j {dur_m}m)")
+        print(f"   ✅ Session: {loc} ({start.strftime('%Y-%m-%d %H:%M')} → {end.strftime('%H:%M') if end else 'running'}, {dur_h}j {dur_m}m){' [kosong]' if kosong else ''}")
+
+        if kosong:
+            continue
 
         # ── Telemetry (1 per 5 menit) ────────────────────────────────────────
         n_telemetry = max(1, duration_secs // 300) if duration_secs > 0 else 8
@@ -181,57 +203,45 @@ def seed():
             db.add(auv)
         db.flush()
 
-        # ── Detections ───────────────────────────────────────────────────────
-        n_detections = random.randint(8, 15)
-        species_in_session = random.sample(SPECIES, random.randint(2, 4))
+        # ── Detections (per frame, 1–4 ikan per spesies) ─────────────────────
+        species_in_session = random.sample(SPECIES, random.randint(2, len(SPECIES)))
+        frames = random.sample(range(100, 2000), random.randint(4, 8))
 
-        for i in range(n_detections):
-            offset = random.randint(1, max(1, duration_secs // 60)) if duration_secs > 0 else random.randint(1, 40)
-            t = make_timestamp(start, offset)
+        for frame_no in frames:
+            t = make_timestamp(start, random.randint(1, max(1, duration_secs // 60)))
             tel_id = random.choice(tel_ids) if tel_ids else None
-            det = Detection(
-                id=generate_cuid(),
-                session_id=session.id,
-                telemetry_id=tel_id,
-                species_name=random.choice(species_in_session),
-                confidence=rnd(0.62, 0.97),
-                depth_at_detection=rnd(1.5, 5.0),
-                frame_number=random.randint(100, 2000),
-                detected_at=t,
-                is_synced=False,
-                created_at=t,
-            )
-            db.add(det)
+            depth = rnd(1.5, 5.0)
+            for sp in random.sample(species_in_session, random.randint(1, len(species_in_session))):
+                for _ in range(random.randint(1, 4)):
+                    db.add(Detection(
+                        id=generate_cuid(),
+                        session_id=session.id,
+                        telemetry_id=tel_id,
+                        species_name=sp,
+                        confidence=rnd(0.62, 0.97),
+                        depth_at_detection=depth,
+                        frame_number=frame_no,
+                        detected_at=t,
+                        is_synced=False,
+                        created_at=t,
+                    ))
         db.flush()
 
-        # ── Fish Counts (agregasi per spesies) ───────────────────────────────
-        species_counts: dict = {}
-        for sp in species_in_session:
-            species_counts[sp] = random.randint(1, 8)
+        # ── Fish Counts (dihitung dari detections, sama seperti saat stream) ─
+        recompute_fish_counts(db, session.id)
 
-        for sp, cnt in species_counts.items():
-            fc = FishCount(
-                id=generate_cuid(),
-                session_id=session.id,
-                species_name=sp,
-                total_ikan=cnt,
-                waktu_deteksi=start,
-                created_at=start,
-                updated_at=end or now,
-            )
-            db.add(fc)
-
-        # ── Video Path ───────────────────────────────────────────────────────
-        file_name = f"{loc.replace(' ', '_').lower()}_{start.strftime('%Y%m%d')}.mp4"
-        file_size = random.randint(40, 320) * 1024 * 1024  # 40–320 MB
+        # ── Video Path (klip dummy) ──────────────────────────────────────────
+        file_name = f"recording_seed_{loc.replace(' ', '_').lower()}_{start.strftime('%Y%m%d_%H%M%S')}.webm"
+        file_path = os.path.join(RECORDINGS_DIR, file_name)
+        make_dummy_video(file_path, loc)
         vp = VideoPath(
             id=generate_cuid(),
             session_id=session.id,
             file_name=file_name,
-            file_path=f"/recordings/{file_name}",
-            file_size=file_size,
-            format='mp4',
-            duration=float(duration_secs) if duration_secs > 0 else None,
+            file_path=file_path,
+            file_size=os.path.getsize(file_path),
+            format='webm',
+            duration=10.0,
             created_at=start,
             updated_at=end or now,
         )
