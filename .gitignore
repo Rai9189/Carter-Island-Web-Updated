@@ -246,3 +246,6 @@ graphify-out/
 
 # Claude Code personal settings (hooks, local overrides)
 .claude/settings.local.json
+
+# Catatan progress pribadi (local only)
+catatan/
