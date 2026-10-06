@@ -83,11 +83,12 @@ def login(
     )
     if wait:
         logger.warning(f"Login diblokir sementara: {body.email} dari {ip} ({wait}s)")
+        minutes = math.ceil(wait / 60)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
-                "Terlalu banyak percobaan login gagal. "
-                f"Coba lagi dalam {math.ceil(wait / 60)} menit."
+                "Too many failed login attempts. "
+                f"Try again in {minutes} minute{'s' if minutes != 1 else ''}."
             ),
             headers={"Retry-After": str(wait)},
         )
