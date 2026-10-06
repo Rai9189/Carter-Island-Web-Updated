@@ -1,15 +1,10 @@
 import asyncio
 import os
-import cv2
 import logging
 from typing import Optional, Dict
 from datetime import datetime
 import pytz
-from config import (
-    RECORDINGS_DIR,
-    RESIZE_WIDTH,
-    RESIZE_HEIGHT,
-)
+from config import RECORDINGS_DIR
 from database.crud.recordings import save_recording_to_db
 
 # Jakarta timezone
@@ -56,45 +51,16 @@ async def start_recording(client_id: str, detection_track) -> Optional[str]:
 
     try:
         recording_id = f"{client_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        filename = f"recording_{recording_id}.webm"
+        filename = f"recording_{recording_id}.mp4"
         filepath = os.path.join(RECORDINGS_DIR, filename)
 
-        actual_fps = detection_track.current_fps
-        if actual_fps <= 0:
-            actual_fps = 10.0
-
-        logger.info(f"Recording at {actual_fps:.1f} FPS (full stream rate)")
-
-        fourcc_options = [
-            cv2.VideoWriter.fourcc(*'VP80'),
-            cv2.VideoWriter.fourcc(*'VP90'),
-        ]
-
-        writer = None
-        for fourcc in fourcc_options:
-            writer = cv2.VideoWriter(
-                filepath,
-                fourcc,
-                actual_fps,
-                (RESIZE_WIDTH, RESIZE_HEIGHT)
-            )
-            if writer.isOpened():
-                logger.info(f"Using codec: {fourcc} at {actual_fps:.1f} FPS")
-                break
-            writer.release()
-            writer = None
-
-        if writer is None or not writer.isOpened():
-            logger.error(f"Failed to open video writer for {filepath}")
-            return None
-
-        detection_track.start_recording(writer)
+        detection_track.start_recording(filepath)
 
         active_recordings[client_id] = {
             "recording_id": recording_id,
             "filename": filename,
             "filepath": filepath,
-            "writer": writer,
+            "track": detection_track,
             "start_time": datetime.now(JAKARTA_TZ),
             "session_id": actual_session_id
         }
@@ -115,11 +81,11 @@ async def stop_recording(client_id: str) -> Optional[dict]:
     try:
         recording_info = active_recordings.pop(client_id)
         filepath = recording_info["filepath"]
-
-        # Release writer dulu agar semua frame ter-flush ke disk sebelum baca ukuran file
-        recording_info["writer"].release()
-
         end_time = datetime.now(JAKARTA_TZ)
+
+        # Tunggu thread penulis menutup file (di thread lain agar event loop tidak terblokir)
+        await asyncio.to_thread(recording_info["track"].stop_recording)
+
         file_size = os.path.getsize(filepath) if os.path.exists(filepath) else 0
         duration = (end_time - recording_info["start_time"]).total_seconds()
 
@@ -171,10 +137,11 @@ def get_recording_info(client_id: str) -> Optional[dict]:
 
 
 def cleanup_all_recordings():
+    """Jaring pengaman saat shutdown: tutup file rekaman yang masih terbuka (tanpa simpan DB)."""
     for client_id in list(active_recordings.keys()):
         recording_info = active_recordings.pop(client_id)
         try:
-            recording_info["writer"].release()
+            recording_info["track"].stop_recording()
             logger.info(f"Cleaned up recording for client {client_id}")
         except Exception as e:
             logger.error(f"Error cleaning up recording for {client_id}: {e}")

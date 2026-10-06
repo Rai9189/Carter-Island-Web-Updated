@@ -129,12 +129,7 @@ def setup_routes(app: FastAPI):
         if not is_recording(client_id):
             return {"success": False, "error": "Not recording"}
 
-        # Stop recording on detection track FIRST (releases writer)
-        detection_track = get_detection_track(client_id)
-        if detection_track:
-            detection_track.stop_recording()
-
-        # Then save metadata to database
+        # stop_recording menutup file rekaman lalu menyimpan metadata ke DB
         recording_data = await stop_recording(client_id)
         if recording_data:
             return {
@@ -153,7 +148,7 @@ def setup_routes(app: FastAPI):
         info = get_recording_info(client_id) if recording else None
         return {
             "recording": recording,
-            # Hanya field yang bisa di-JSON-kan (entri aslinya memuat cv2.VideoWriter)
+            # Hanya field yang bisa di-JSON-kan (entri aslinya memuat objek track)
             "info": {
                 "recording_id": info["recording_id"],
                 "filename": info["filename"],

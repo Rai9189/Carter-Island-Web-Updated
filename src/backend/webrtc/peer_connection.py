@@ -118,12 +118,9 @@ async def cleanup_pc(client_id: str):
     if task:
         task.cancel()
 
-    # Stop detection track recording if active
-    det_track = detection_tracks.pop(client_id, None)
-    if det_track and det_track.recording:
-        det_track.stop_recording()
+    detection_tracks.pop(client_id, None)
 
-    # Finalize metadata recording + simpan ke video_paths agar tidak jadi orphan
+    # Tutup file rekaman + simpan ke video_paths agar tidak jadi orphan
     # saat client disconnect tanpa sempat memanggil /api/recording/stop
     from video.recording import is_recording, stop_recording
     if is_recording(client_id):

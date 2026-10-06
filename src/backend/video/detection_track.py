@@ -1,3 +1,4 @@
+import av
 import cv2
 import time
 import asyncio
@@ -5,6 +6,7 @@ import logging
 import numpy as np
 import queue
 import threading
+from fractions import Fraction
 from typing import Optional, List, Tuple
 from aiortc import VideoStreamTrack
 from av import VideoFrame
@@ -23,6 +25,62 @@ from models.yolo_detector import run_inference, get_device_info
 from database.crud.detections import save_detection_to_db  # GANTI: dari database.detections
 
 logger = logging.getLogger("carter-backend")
+
+# Rekaman: H.264 (libx264) di MP4 terfragmentasi — file tetap bisa diputar
+# sampai fragmen terakhir walau backend mati sebelum stop.
+RECORD_TIME_BASE = Fraction(1, 1000)  # pts dalam milidetik jam dinding
+RECORD_MOVFLAGS = "frag_keyframe+empty_moov+default_base_moof"
+RECORD_GOP = 30  # keyframe tiap 30 frame = batas fragmen; crash kehilangan < 1 fragmen
+RECORD_QUEUE_SIZE = 60
+
+
+def write_recording(filepath: str, frames: "queue.Queue") -> int:
+    """
+    Tulis frame (monotonic_time, bgr_ndarray) dari antrean ke MP4 sampai
+    menerima None. Hanya fungsi ini yang membuka, menulis, dan menutup file,
+    jadi tidak ada release dari thread lain saat encoder masih dipakai.
+    pts diambil dari jam dinding → durasi video = durasi rekaman nyata walau
+    FPS naik-turun atau frame dibuang saat antrean penuh.
+    """
+    # flush_packets: tiap fragmen langsung ke disk (tanpa ini tertahan di buffer → hilang saat crash)
+    container = av.open(filepath, mode="w", format="mp4",
+                        options={"movflags": RECORD_MOVFLAGS, "flush_packets": "1"})
+    stream = None
+    t0 = 0.0
+    last_pts = -1
+    written = 0
+    try:
+        while True:
+            item = frames.get()
+            if item is None:
+                break
+            t, img = item
+            if stream is None:
+                h, w = img.shape[:2]
+                stream = container.add_stream("libx264", rate=30)
+                stream.width, stream.height = w - w % 2, h - h % 2  # yuv420p wajib genap
+                stream.pix_fmt = "yuv420p"
+                stream.time_base = RECORD_TIME_BASE
+                stream.codec_context.time_base = RECORD_TIME_BASE
+                stream.codec_context.gop_size = RECORD_GOP
+                stream.options = {"preset": "ultrafast", "tune": "zerolatency"}
+                t0 = t
+            pts = max(int((t - t0) * 1000), last_pts + 1)
+            last_pts = pts
+            frame = VideoFrame.from_ndarray(img[:stream.height, :stream.width], format="bgr24")
+            frame.pts = pts
+            frame.time_base = RECORD_TIME_BASE
+            container.mux(stream.encode(frame))
+            written += 1
+        if stream is not None:
+            container.mux(stream.encode())  # flush encoder
+    except Exception:
+        logger.exception(f"Error writing recording {filepath}")
+    finally:
+        container.close()
+    logger.info(f"Video writer stopped: {filepath} ({written} frames, {last_pts / 1000:.1f}s)")
+    return written
+
 
 class RtspDetectionTrack(VideoStreamTrack):
 
@@ -51,12 +109,10 @@ class RtspDetectionTrack(VideoStreamTrack):
         self.last_save_time = time.time()
         self.save_task: Optional[asyncio.Task] = None
 
-        # Recording support with background thread for non-blocking writes
+        # Recording: frame dikirim ke thread penulis (write_recording) lewat antrean
         self.recording = False
-        self.video_writer: Optional[cv2.VideoWriter] = None
         self.frame_queue: Optional[queue.Queue] = None
         self.writer_thread: Optional[threading.Thread] = None
-        self.stop_writer_thread = False
 
     async def recv(self) -> VideoFrame:
         frame: VideoFrame = await self.src.recv()
@@ -119,11 +175,7 @@ class RtspDetectionTrack(VideoStreamTrack):
         cv2.putText(img, f"Device: {device}", (10, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-        if self.recording and self.frame_queue is not None:
-            try:
-                self.frame_queue.put_nowait(img.copy())
-            except queue.Full:
-                pass
+        self.enqueue_recording_frame(img)
 
         img = img.astype(np.uint8)
         out = VideoFrame.from_ndarray(img, format="bgr24")
@@ -131,69 +183,40 @@ class RtspDetectionTrack(VideoStreamTrack):
         out.time_base = frame.time_base
         return out
 
-    def _video_writer_thread(self):
-        logger.info("Video writer thread started")
-        frames_written = 0
-
-        while not self.stop_writer_thread or (
-            self.frame_queue is not None and not self.frame_queue.empty()
-        ):
+    def enqueue_recording_frame(self, img: np.ndarray):
+        q = self.frame_queue
+        if self.recording and q is not None:
             try:
-                if self.frame_queue is not None:
-                    frame = self.frame_queue.get(timeout=0.5)
+                q.put_nowait((time.monotonic(), img.copy()))
+            except queue.Full:
+                pass  # encoder tertinggal: frame dibuang, durasi tetap benar (pts jam dinding)
 
-                    if self.video_writer is not None:
-                        self.video_writer.write(frame)
-                        frames_written += 1
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Error writing frame to video: {e}")
-
-        logger.info(f"Video writer thread stopped. Frames written: {frames_written}")
-
-    def start_recording(self, video_writer: cv2.VideoWriter):
-        self.recording = True
-        self.video_writer = video_writer
-        self.stop_writer_thread = False
-
-        # Create queue for frames (max 30 frames buffered)
-        self.frame_queue = queue.Queue(maxsize=30)
-
-        # Start background writer thread
-        self.writer_thread = threading.Thread(target=self._video_writer_thread, daemon=True)
+    def start_recording(self, filepath: str):
+        self.frame_queue = queue.Queue(maxsize=RECORD_QUEUE_SIZE)
+        self.writer_thread = threading.Thread(
+            target=write_recording, args=(filepath, self.frame_queue), daemon=True
+        )
         self.writer_thread.start()
+        self.recording = True
+        logger.info(f"Started recording to {filepath}")
 
-        logger.info(f"Started recording with background thread at full FPS (non-blocking)")
-
-    def stop_recording(self):
+    def stop_recording(self, timeout: float = 10.0) -> bool:
+        """
+        Blocking (panggil lewat asyncio.to_thread). Kirim tanda selesai ke
+        thread penulis lalu tunggu file ditutup. True bila file sudah final.
+        """
         self.recording = False
-
-        # Stop the writer thread
-        self.stop_writer_thread = True
-
-        # Wait for queue to drain and thread to finish
-        if self.writer_thread is not None:
-            logger.info("Waiting for video writer thread to finish...")
-            self.writer_thread.join(timeout=10.0)
-
-            if self.writer_thread.is_alive():
-                logger.warning("Video writer thread did not finish in time")
-
-            self.writer_thread = None
-
-        # Release video writer
-        if self.video_writer is not None:
-            try:
-                self.video_writer.release()
-                logger.info("Video writer released successfully")
-            except Exception as e:
-                logger.error(f"Error releasing video writer: {e}")
-            finally:
-                self.video_writer = None
-
-        # Clear queue
-        self.frame_queue = None
-
-        logger.info("Stopped recording video frames")
+        q, thread = self.frame_queue, self.writer_thread
+        self.frame_queue = self.writer_thread = None
+        if q is None or thread is None:
+            return True
+        try:
+            q.put(None, timeout=timeout)  # penulis sedang menguras antrean, slot pasti terbuka
+        except queue.Full:
+            pass
+        thread.join(timeout)
+        if thread.is_alive():
+            # File tetap ditutup oleh thread penulis sendiri begitu selesai
+            logger.warning("Video writer belum selesai saat timeout; file difinalisasi di background")
+            return False
+        return True
