@@ -42,6 +42,7 @@ from routers.sync import router as sync_router
 # Logging Setup
 # ==========================
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger("carter-backend")
 
 

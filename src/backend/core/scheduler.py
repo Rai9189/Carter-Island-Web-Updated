@@ -39,6 +39,7 @@ logger = logging.getLogger("carter-backend")
 # URL Raspberry Pi dan MediaMTX
 RASPI_TELEMETRY_URL = "http://192.168.2.2:14552/telemetry"
 MEDIAMTX_URL        = "http://192.168.2.2:8889/cam/"
+HEALTH_CHECK_TIMEOUT = 1.5  # detik per cek; terukur ~3.6 dtk total saat Raspi offline (< interval 5 dtk)
 
 # Singleton scheduler
 scheduler = AsyncIOScheduler(timezone="Asia/Jakarta")
@@ -95,7 +96,7 @@ async def health_check_job():
 
     # ── Cek 1: Telemetri navigasi dari Raspberry Pi ──
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
             response = await client.get(RASPI_TELEMETRY_URL)
 
             if response.is_success:
@@ -112,7 +113,7 @@ async def health_check_job():
     # ── Cek 2: MediaMTX fallback ──
     if not is_online:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT) as client:
                 response = await client.head(MEDIAMTX_URL)
                 if response.is_success:
                     is_online = True
