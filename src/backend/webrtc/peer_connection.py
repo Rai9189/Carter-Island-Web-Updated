@@ -24,6 +24,13 @@ bitrate_tasks: Dict[str, asyncio.Task] = {}
 media_players: Dict[str, MediaPlayer] = {}
 
 
+def _stop_player(player: MediaPlayer) -> None:
+    # MediaPlayer tak punya stop(); menghentikan track-nya yang menutup thread decode + koneksi RTSP
+    for track in (player.audio, player.video):
+        if track:
+            track.stop()
+
+
 async def handle_offer(websocket, client_id: str, message: dict):
     # Get preferences from offer
     offer_sdp = message.get("sdp")
@@ -62,7 +69,7 @@ async def handle_offer(websocket, client_id: str, message: dict):
 
     if not player.video:
         peer_connections.pop(client_id, None)
-        player.stop()
+        _stop_player(player)
         raise RuntimeError("RTSP tidak memiliki video track")
 
     media_players[client_id] = player
@@ -147,7 +154,7 @@ async def cleanup_pc(client_id: str):
         try:
             loop = asyncio.get_running_loop()
             await asyncio.wait_for(
-                loop.run_in_executor(None, player.stop),
+                loop.run_in_executor(None, _stop_player, player),
                 timeout=3.0
             )
             logger.info(f"MediaPlayer {client_id} stopped")
