@@ -129,6 +129,13 @@ def test_delete_recording_removes_file(client, db, admin, admin_h, user_h):
     assert not os.path.exists(path)
 
 
+def test_recordings_list_has_mission_name(client, db, admin, admin_h):
+    s = make_session(db, admin)
+    vid, _ = _recording(db, s.id, "recording_pytest_m.webm")
+    rows = client.get("/api/recordings", params={"session_id": s.id}, headers=admin_h).json()["data"]
+    assert [r["missionName"] for r in rows if r["id"] == vid] == ["Tes"]
+
+
 def test_delete_session_removes_files(client, db, admin, admin_h):
     s = make_session(db, admin)
     _, p1 = _recording(db, s.id, "recording_pytest_s1.webm")

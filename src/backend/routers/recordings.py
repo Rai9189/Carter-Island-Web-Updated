@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from database.connection import get_db
 from database.models import VideoPath, MonitoringSession, SessionStatus
@@ -104,7 +104,8 @@ def get_recordings(
 
     total = query.count()
     recordings = (
-        query.order_by(VideoPath.created_at.desc())
+        query.options(joinedload(VideoPath.session))
+        .order_by(VideoPath.created_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -241,6 +242,7 @@ def _format_recording(r: VideoPath) -> dict:
     return {
         "id": r.id,
         "sessionId": r.session_id,
+        "missionName": r.session.location_name if r.session else None,
         "fileName": r.file_name,
         "filePath": r.file_path,
         "fileSize": r.file_size,
