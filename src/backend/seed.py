@@ -1,7 +1,8 @@
 """
 Seed script — Carter Island AUV Database
 Jalankan dari folder src/backend/:
-    python seed.py
+    python seed.py            # tambah data contoh
+    python seed.py --reset    # hapus dulu misi seed lama (nama di SESSION_CONFIGS), lalu isi ulang
 
 Akan membuat:
   - 2 user (1 ADMIN, 1 USER)
@@ -28,6 +29,7 @@ from database.models import (
 )
 from database.crud.fish_counts import recompute_fish_counts
 from config import RECORDINGS_DIR
+from routers.recordings import delete_recording_files
 from core.cuid import generate_cuid
 import cv2
 import numpy as np
@@ -35,7 +37,8 @@ from auth.password import hash_password
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-SPECIES = ['Nila', 'Bandeng', 'Kerapu']
+# Harus sama persis dengan nama kelas model YOLO (lihat T8)
+SPECIES = ['Kerapu', 'Bandeng', 'Nila Salin', 'Bawal Bintang']
 HEADINGS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 
 # Misi milik akun USER (sisanya milik ADMIN)
@@ -73,15 +76,35 @@ def make_dummy_video(path: str, label: str, seconds: int = 10, fps: int = 10) ->
     writer.release()
 
 
+def reset_seed_sessions(db) -> None:
+    """
+    Hapus misi seed lama berdasarkan nama misi di SESSION_CONFIGS — bukan
+    berdasarkan akun, supaya misi uji asli milik akun seed tidak ikut hilang.
+    Telemetri/deteksi/fish count/rekaman ikut terhapus lewat cascade; file
+    video dihapus setelah commit (pola sama dengan DELETE /api/sessions).
+    """
+    names = [loc for loc, *_ in SESSION_CONFIGS]
+    sessions = db.query(MonitoringSession).filter(MonitoringSession.location_name.in_(names)).all()
+    file_names = [v.file_name for s in sessions for v in s.video_paths]
+    for s in sessions:
+        db.delete(s)
+    db.commit()
+    delete_recording_files(file_names)
+    print(f"🧹 Reset: {len(sessions)} misi seed lama dihapus ({len(file_names)} file video)\n")
+
+
 # ── Main Seed ─────────────────────────────────────────────────────────────────
 
-def seed():
+def seed(reset: bool = False):
     if not check_db_connection():
         print("❌ Tidak bisa konek ke database! Periksa DATABASE_URL di .env")
         sys.exit(1)
 
     init_db()
     db = next(get_db())
+
+    if reset:
+        reset_seed_sessions(db)
 
     print("🌱 Mulai seeding database Carter Island...\n")
 
@@ -264,4 +287,4 @@ def seed():
 
 
 if __name__ == '__main__':
-    seed()
+    seed(reset='--reset' in sys.argv[1:])
