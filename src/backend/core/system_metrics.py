@@ -32,16 +32,24 @@ def get_cpu_percent() -> float:
 # dan tidak termonitor lewat nvidia-smi biasa — perlu diganti/ditambah
 # cabang pakai `tegrastats` atau `jtop` (package `jetson-stats`) saat
 # deploy ke hardware Jetson.
+_gpu_warned = False
+
+
 def get_gpu_percent() -> Optional[float]:
     """
     GPU utilization (%) untuk dev machine. Return None kalau tidak ada
     CUDA GPU, atau kalau nvidia-smi/NVML tidak tersedia.
     """
+    global _gpu_warned
     if not torch.cuda.is_available():
         return None
 
     try:
         return float(torch.cuda.utilization())
     except Exception as e:
-        logger.warning(f"Gagal membaca GPU utilization: {e}")
+        # Endpoint di-poll tiap ~1 dtk; kalau NVML tidak ada error-nya akan
+        # sama terus, jadi cukup di-log sekali agar tidak membanjiri log.
+        if not _gpu_warned:
+            logger.warning(f"Gagal membaca GPU utilization: {e}")
+            _gpu_warned = True
         return None
