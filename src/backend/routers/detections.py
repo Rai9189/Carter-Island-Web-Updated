@@ -24,7 +24,7 @@ from database.models import Detection
 from core.dependencies import get_current_user
 from core.csv_export import csv_response, parse_date_range
 from core.validation import LIST_MAX_LIMIT
-from core.timeutil import iso_utc, parse_local, local_str
+from core.timeutil import iso_utc, local_str
 
 logger = logging.getLogger("carter-backend")
 
@@ -96,17 +96,11 @@ def get_detection_stats(
     if session_id:
         query = query.filter(Detection.session_id == session_id)
 
-    try:
-        if start_date:
-            query = query.filter(
-                Detection.detected_at >= parse_local(start_date)
-            )
-        if end_date:
-            query = query.filter(
-                Detection.detected_at <= parse_local(end_date)
-            )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Format tanggal tidak valid. Gunakan ISO 8601 (YYYY-MM-DD)")
+    from_date, to_date = parse_date_range(start_date, end_date)
+    if from_date:
+        query = query.filter(Detection.detected_at >= from_date)
+    if to_date:
+        query = query.filter(Detection.detected_at <= to_date)
 
     total_detections = query.count()
 

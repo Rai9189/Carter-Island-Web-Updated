@@ -20,6 +20,7 @@ from database.connection import get_db
 from database.models import Detection, Telemetry, AUVStatus, MonitoringSession, SessionStatus
 from core.dependencies import get_current_user
 from core.timeutil import iso_utc, parse_local
+from core.csv_export import parse_date_range
 
 logger = logging.getLogger("carter-backend")
 
@@ -120,17 +121,11 @@ def get_telemetry_analytics(
     if session_id:
         conds.append(Telemetry.session_id == session_id)
 
-    if from_date:
-        try:
-            conds.append(Telemetry.timestamp >= parse_local(from_date))
-        except ValueError:
-            pass
-
-    if to_date:
-        try:
-            conds.append(Telemetry.timestamp <= parse_local(to_date))
-        except ValueError:
-            pass
+    range_from, range_to = parse_date_range(from_date, to_date)
+    if range_from:
+        conds.append(Telemetry.timestamp >= range_from)
+    if range_to:
+        conds.append(Telemetry.timestamp <= range_to)
 
     # Ringkasan dari SELURUH rentang (dulu cuma 500 baris pertama)
     count, avg_ph, avg_tds, avg_do, avg_temp, first_ts, last_ts = (

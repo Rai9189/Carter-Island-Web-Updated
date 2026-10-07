@@ -127,6 +127,9 @@ export default function HistoricalContent() {
   }
 
   const applyCustomRange = () => {
+    if (!draftFrom || !draftTo) return toast.error('Isi kedua tanggal')
+    // Format YYYY-MM-DD → urutan string = urutan tanggal
+    if (draftFrom > draftTo) return toast.error("Tanggal 'Dari' tidak boleh setelah 'Sampai'")
     setRangeKey('custom')
     setAppliedFrom(draftFrom); setAppliedTo(draftTo)
   }
@@ -257,12 +260,12 @@ export default function HistoricalContent() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-3 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">Dari:</span>
-          <input type="date" value={draftFrom} onChange={e => setDraftFrom(e.target.value)}
+          <input type="date" value={draftFrom} max={draftTo || undefined} onChange={e => setDraftFrom(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">Sampai:</span>
-          <input type="date" value={draftTo} onChange={e => setDraftTo(e.target.value)}
+          <input type="date" value={draftTo} min={draftFrom || undefined} onChange={e => setDraftTo(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:border-blue-400" />
         </div>
         <div className="flex items-center gap-1">

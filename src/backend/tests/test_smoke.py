@@ -113,6 +113,20 @@ def test_last_admin_cannot_demote_self(client, admin_h, admin):
     assert client.put(f"/api/users/{admin.id}", headers=admin_h, json=body).status_code == 400
 
 
+@pytest.mark.parametrize("path,a,b", [
+    ("/api/analytics/telemetry", "from_date", "to_date"),
+    ("/api/detections/stats", "start_date", "end_date"),
+    ("/api/telemetry/export", "from", "to"),
+    ("/api/detections/export", "from", "to"),
+])
+def test_date_range_validated(client, user_h, path, a, b):
+    def get(x, y):
+        return client.get(path, params={a: x, b: y}, headers=user_h).status_code
+    assert get("2026-01-01T00:00:00", "2026-01-31T23:59:59") == 200
+    assert get("2026-01-31T00:00:00", "2026-01-01T23:59:59") == 400, "rentang terbalik"
+    assert get("bukan-tanggal", "2026-01-31") == 400, "format salah"
+
+
 # ── Waktu (UTC + 'Z') ────────────────────────────────────────────────
 
 def test_timestamps_have_zone(client, user_h, mission):
