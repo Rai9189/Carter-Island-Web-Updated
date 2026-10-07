@@ -2,11 +2,13 @@
 
 import { useState, useMemo } from 'react'
 import useSWR from 'swr'
+import { toast } from 'sonner'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts'
 import { apiClient } from '@/lib/api-client'
+import { downloadXlsx } from '@/lib/xlsx-export'
 
 const fetcher = apiClient.swrFetcher
 
@@ -63,7 +65,7 @@ function fmtAxisDate(t: string) {
   return new Date(t).toLocaleDateString('id-ID', { month: 'short', day: 'numeric' })
 }
 
-function downloadSessionCSV(session: any, fishCounts: any, telemetrySummary: any) {
+function downloadSessionXlsx(session: any, fishCounts: any, telemetrySummary: any) {
   const headers = ['TANGGAL', 'NAMA MISI', 'WAKTU MISI', 'SESSION ID', 'DURASI', 'JML IKAN', 'SPESIES', 'PH', 'TDS', 'SUHU', 'DO']
   const row = [
     fmtDate(session.startTime),
@@ -73,17 +75,13 @@ function downloadSessionCSV(session: any, fishCounts: any, telemetrySummary: any
     fmtDuration(session.startTime, session.endTime),
     fishCounts?.totalFish ?? 0,
     fishCounts?.speciesCount ?? 0,
-    telemetrySummary?.avgPh ?? '',
-    telemetrySummary?.avgTds ?? '',
-    telemetrySummary?.avgTemp ?? '',
-    telemetrySummary?.avgDo ?? '',
+    telemetrySummary?.avgPh ?? null,
+    telemetrySummary?.avgTds ?? null,
+    telemetrySummary?.avgTemp ?? null,
+    telemetrySummary?.avgDo ?? null,
   ]
-  const csv = [headers.join(','), row.join(',')].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `misi-${session.locationName}-${fmtDate(session.startTime)}.csv`; a.click()
-  URL.revokeObjectURL(url)
+  downloadXlsx(`misi-${session.locationName}-${fmtDate(session.startTime)}.xlsx`, headers, [row])
+    .catch(() => toast.error('Gagal mengunduh Excel misi'))
 }
 
 // Trend chart wrapper
@@ -400,10 +398,10 @@ function SessionRow({ session, fish }: { session: any; fish?: { totalFish: numbe
       <td className="px-4 py-3 text-orange-500">{tel?.avgDo ?? '—'}</td>
       <td className="px-4 py-3">
         <button
-          onClick={() => downloadSessionCSV(session, fish, tel)}
+          onClick={() => downloadSessionXlsx(session, fish, tel)}
           className="flex items-center gap-1 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap"
         >
-          ↓ CSV
+          ↓ Excel
         </button>
       </td>
     </tr>

@@ -8,6 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts'
 import { apiClient } from '@/lib/api-client'
+import { downloadXlsx } from '@/lib/xlsx-export'
 
 const fetcher = apiClient.swrFetcher
 
@@ -85,21 +86,6 @@ function StatusBadge({ value, type }: { value: number; type: 'ph' | 'tds' | 'do'
       {!isNormal && <span className="mr-0.5">{isBelow ? '▼' : '▲'}</span>}{label}
     </span>
   )
-}
-
-function csvCell(v: unknown): string {
-  const s = v === null || v === undefined ? '' : String(v)
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
-function downloadCSV(data: any[], filename: string, headers: string[], rowFn: (row: any) => unknown[]) {
-  const rows = [headers.map(csvCell).join(','), ...data.map(r => rowFn(r).map(csvCell).join(','))]
-  // BOM agar Excel membaca file sebagai UTF-8
-  const blob = new Blob(['﻿' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename; a.click()
-  URL.revokeObjectURL(url)
 }
 
 // Ambil semua baris sesi untuk export — tabel di layar hanya memuat 20 baris terbaru
@@ -418,28 +404,27 @@ export default function AnalyticsContent() {
                   onClick={async () => {
                     try {
                       const rows = await fetchAllRows(`/api/detections?session_id=${sessionId}`, detectionTotal)
-                      downloadCSV(
-                        rows,
-                        `detection-log-${sessionLabel}.csv`,
-                        ['TANGGAL', 'WAKTU MISI', 'SESSION ID', 'DURASI MISI', 'WAKTU DETEKSI', 'SPESIES', 'CONFIDENCE', 'KEDALAMAN'],
-                        (r: any) => [
+                      await downloadXlsx(
+                        `detection-log-${sessionLabel}.xlsx`,
+                        ['TANGGAL', 'WAKTU MISI', 'SESSION ID', 'DURASI MISI', 'WAKTU DETEKSI', 'SPESIES', 'CONFIDENCE', 'KEDALAMAN (m)'],
+                        rows.map((r: any) => [
                           fmtDate(r.detectedAt),
                           fmtTimeRange(activeSession?.startTime ?? '', activeSession?.endTime ?? null),
                           sessionLabel,
                           sessionDuration > 0 ? formatDuration(sessionDuration) : '—',
                           new Date(r.detectedAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
                           r.speciesName,
-                          `${(r.confidence * 100).toFixed(0)}%`,
-                          r.depthAtDetection ? `${r.depthAtDetection}m` : '—',
-                        ]
+                          { value: r.confidence, format: '0%' },
+                          r.depthAtDetection ?? null,
+                        ])
                       )
                     } catch {
-                      toast.error('Gagal mengunduh CSV deteksi')
+                      toast.error('Gagal mengunduh Excel deteksi')
                     }
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-medium rounded-lg transition-colors"
                 >
-                  ↓ Download CSV
+                  ↓ Download Excel
                 </button>
               </div>
             </div>
@@ -501,11 +486,10 @@ export default function AnalyticsContent() {
                   onClick={async () => {
                     try {
                       const rows = await fetchAllRows(`/api/telemetry?session_id=${sessionId}`, telemetryTotal)
-                      downloadCSV(
-                        rows,
-                        `telemetry-log-${sessionLabel}.csv`,
+                      await downloadXlsx(
+                        `telemetry-log-${sessionLabel}.xlsx`,
                         ['TANGGAL', 'WAKTU MISI', 'SESSION ID', 'DURASI MISI', 'WAKTU SENSOR', 'PH', 'SUHU (C)', 'TDS (ppm)', 'DO (mg/L)'],
-                        (r: any) => [
+                        rows.map((r: any) => [
                           fmtDate(r.timestamp),
                           fmtTimeRange(activeSession?.startTime ?? '', activeSession?.endTime ?? null),
                           sessionLabel,
@@ -515,15 +499,15 @@ export default function AnalyticsContent() {
                           r.waterTemp,
                           r.tdsValue,
                           r.dissolvedOxygen,
-                        ]
+                        ])
                       )
                     } catch {
-                      toast.error('Gagal mengunduh CSV kualitas air')
+                      toast.error('Gagal mengunduh Excel kualitas air')
                     }
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-xs font-medium rounded-lg transition-colors"
                 >
-                  ↓ Download CSV
+                  ↓ Download Excel
                 </button>
               </div>
             </div>
