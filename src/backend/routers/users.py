@@ -19,7 +19,7 @@ from database.models import User, Role, MonitoringSession
 from auth.password import hash_password
 from core.dependencies import require_admin
 from core.cuid import generate_cuid
-from core.validation import safe_str, check_password
+from core.validation import safe_str, check_password, check_phone
 from core.timeutil import iso_utc
 
 logger = logging.getLogger("carter-backend")
@@ -43,6 +43,8 @@ def _read_user_body(body: dict, default_role: str) -> tuple[str, str, str, str, 
         username = safe_str(body.get("fullName"), "fullName")
         email = safe_str(body.get("email"), "email").lower()
         phone_number = safe_str(body.get("phoneNumber"), "phoneNumber")
+        if phone_number:  # kosong dicek caller (wajib diisi)
+            check_phone(phone_number)
         password = body.get("password") or ""
         if not isinstance(password, str):
             raise ValueError("password harus berupa teks")

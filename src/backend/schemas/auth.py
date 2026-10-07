@@ -5,7 +5,7 @@ Dipakai untuk validasi request body.
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 
-from core.validation import check_password
+from core.validation import check_password, check_phone
 
 
 # ==========================
@@ -34,6 +34,11 @@ class RegisterRequest(BaseModel):
     @classmethod
     def password_min_length(cls, v: str) -> str:
         return check_password(v)
+
+    @field_validator("phoneNumber")
+    @classmethod
+    def phone_valid(cls, v: str) -> str:
+        return check_phone(v.strip())
 
     @field_validator("role")
     @classmethod

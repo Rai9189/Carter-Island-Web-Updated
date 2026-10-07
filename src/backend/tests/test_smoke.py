@@ -70,7 +70,7 @@ def test_login_rate_limit(client):
 
 
 def test_register_admin_only(client, user_h):
-    body = {"fullName": "X", "email": "x@tes.com", "phoneNumber": "0812",
+    body = {"fullName": "X", "email": "x@tes.com", "phoneNumber": "08123456789",
             "password": "rahasia88", "role": "ADMIN"}
     assert client.post("/api/auth/register", json=body).status_code == 401
     assert client.post("/api/auth/register", json=body, headers=user_h).status_code == 403
@@ -80,11 +80,11 @@ def test_register_admin_only(client, user_h):
 
 def test_malformed_body_is_400(client, admin_h):
     r = client.post("/api/users", headers=admin_h,
-                    json={"fullName": 123, "email": "y@tes.com", "phoneNumber": "0812",
+                    json={"fullName": 123, "email": "y@tes.com", "phoneNumber": "08123456789",
                           "password": "rahasia88", "role": "USER"})
     assert r.status_code == 400
     r = client.post("/api/users", headers=admin_h,
-                    json={"fullName": "Y", "email": "y@tes.com", "phoneNumber": "0812",
+                    json={"fullName": "Y", "email": "y@tes.com", "phoneNumber": "08123456789",
                           "password": "pendek", "role": "USER"})
     assert r.status_code == 400
 
@@ -95,8 +95,21 @@ def test_pagination_clamped(client, user_h, mission, path, query):
     assert client.get(f"{path}?{query}", headers=user_h).status_code == 200
 
 
+def test_phone_validation(client, admin_h):
+    from core.validation import check_phone
+    for ok in ["08123456789", "+62-812-3456-7890", "62 812 3456 789", "0812.3456.7890"]:
+        assert check_phone(ok) == ok
+    for bad in ["abc123", "0812", "021-555-1234", "+1 555 123 4567", "08123456789012", "081234567"]:
+        with pytest.raises(ValueError):
+            check_phone(bad)
+    body = {"fullName": "Z", "email": "z@tes.com", "phoneNumber": "08abc",
+            "password": "rahasia88", "role": "USER"}
+    assert client.post("/api/users", headers=admin_h, json=body).status_code == 400
+    assert client.post("/api/auth/register", headers=admin_h, json=body).status_code == 422
+
+
 def test_last_admin_cannot_demote_self(client, admin_h, admin):
-    body = {"fullName": "admin", "email": "admin@tes.com", "phoneNumber": "0812", "role": "USER"}
+    body = {"fullName": "admin", "email": "admin@tes.com", "phoneNumber": "08123456789", "role": "USER"}
     assert client.put(f"/api/users/{admin.id}", headers=admin_h, json=body).status_code == 400
 
 

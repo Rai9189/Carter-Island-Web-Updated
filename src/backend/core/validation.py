@@ -7,6 +7,7 @@ supaya field bertipe salah tidak bikin error mentah bocor jadi 500.
 Semua helper raise ValueError polos; caller yang mengubahnya jadi 400.
 """
 import math
+import re
 from typing import Any, Optional
 
 # Berlaku saat password dibuat/diganti (register, admin create/update user).
@@ -32,6 +33,18 @@ def check_password(password: str) -> str:
     if len(password) < PASSWORD_MIN_LENGTH:
         raise ValueError(f"Password minimal {PASSWORD_MIN_LENGTH} karakter")
     return password
+
+
+# Nomor HP Indonesia: 08… (10–13 digit), atau +62/62 sebagai ganti 0. Spasi, '-', '.'
+# boleh sebagai pemisah; nomor disimpan apa adanya seperti yang diketik.
+_PHONE_RE = re.compile(r"(?:0|\+?62)8\d{8,11}")
+
+
+def check_phone(phone: str) -> str:
+    """Raise ValueError kalau bukan nomor HP Indonesia yang valid."""
+    if not _PHONE_RE.fullmatch(re.sub(r"[\s.-]", "", phone)):
+        raise ValueError("Nomor telepon tidak valid (contoh: 08123456789 atau +62 812-3456-789)")
+    return phone
 
 
 def safe_float(value: Any, field_name: str, default: Optional[float] = None) -> float:
